@@ -3,7 +3,7 @@ ThisBuild / version := "1.0.0"
 
 ThisBuild / scalaVersion := "2.13.16"
 
-ThisBuild / licenses := Seq(License.Apache2)
+ThisBuild / licenses := Seq(License.MIT)
 
 lazy val root = (project in file("."))
   .aggregate(core, benchmarks)
