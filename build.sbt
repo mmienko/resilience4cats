@@ -16,9 +16,9 @@ lazy val core = project
   .settings(
     name := "CircuitBreaker",
     libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-effect" % "3.5.4",
-      "org.typelevel" %% "munit-cats-effect" % "2.0.0-M3" % Test,
-      "org.typelevel" %% "cats-effect-testkit" % "3.5.4" % Test,
+      "org.typelevel" %% "cats-effect" % "3.5.7",
+      "org.typelevel" %% "munit-cats-effect" % "2.1.0" % Test,
+      "org.typelevel" %% "cats-effect-testkit" % "3.5.7" % Test,
     ),
     testFrameworks += new TestFramework("munit.Framework"),
   )
