@@ -1,6 +1,6 @@
 ThisBuild / version := "1.0.0"
 
-ThisBuild / scalaVersion := "2.13.16"
+ThisBuild / scalaVersion := "2.13.18"
 
 ThisBuild / licenses := Seq(License.MIT)
 
@@ -10,14 +10,17 @@ lazy val root = (project in file("."))
     name := "CircuitBreaker4Cats"
   )
 
+val CatsEffectVersion = "3.6.3"
+val MunitCatsEffectVersion = "2.1.0"
+
 lazy val core = project
   .in(file("core"))
   .settings(
     name := "CircuitBreaker",
     libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-effect" % "3.5.7",
-      "org.typelevel" %% "munit-cats-effect" % "2.1.0" % Test,
-      "org.typelevel" %% "cats-effect-testkit" % "3.5.7" % Test,
+      "org.typelevel" %% "cats-effect" % CatsEffectVersion,
+      "org.typelevel" %% "munit-cats-effect" % MunitCatsEffectVersion % Test,
+      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
     ),
     testFrameworks += new TestFramework("munit.Framework"),
   )
@@ -36,9 +39,9 @@ lazy val rateLimiter = project
   .settings(
     name := "RateLimiter",
     libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-effect" % "3.5.7",
-      "org.typelevel" %% "munit-cats-effect" % "2.1.0" % Test,
-      "org.typelevel" %% "cats-effect-testkit" % "3.5.7" % Test,
+      "org.typelevel" %% "cats-effect" % CatsEffectVersion,
+      "org.typelevel" %% "munit-cats-effect" % MunitCatsEffectVersion % Test,
+      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
     ),
     testFrameworks += new TestFramework("munit.Framework"),
   )
