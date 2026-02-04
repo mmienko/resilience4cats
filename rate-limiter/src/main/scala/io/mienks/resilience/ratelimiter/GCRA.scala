@@ -104,14 +104,17 @@ object GCRA {
       initialCapacity: Int,
       rate: RefillRate
   ): F[GCRA[F]] =
-    Sync[F].delay {
-      val emissionIntervalNanos = rate.period.toNanos / rate.requests
-      new GCRA[F](
-        requestCapacity = capacity,
-        emissionPeriodNanos = emissionIntervalNanos,
-        nextRequestTime = new AtomicLong(-initialCapacity * emissionIntervalNanos)
-      )
-    }
+    for {
+      now  <- Clock[F].realTime
+      gcra <- Sync[F].delay {
+        val emissionIntervalNanos = rate.period.toNanos / rate.requests
+        new GCRA[F](
+          requestCapacity = capacity,
+          emissionPeriodNanos = emissionIntervalNanos,
+          nextRequestTime = new AtomicLong(now.toNanos - initialCapacity * emissionIntervalNanos)
+        )
+      }
+    } yield gcra
 
   def empty[F[_]: Sync](capacity: Int, rate: RefillRate): F[GCRA[F]] =
     apply(capacity, initialCapacity = 0, rate)
