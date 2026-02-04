@@ -5,12 +5,12 @@ import cats.effect.std.AtomicCell
 import cats.effect.{Async, Clock, Ref}
 import cats.syntax.all._
 import cats.{Applicative, Monad}
-import io.mienks.resilience.ratelimiter.TokenBucket.RefillRate
+import io.mienks.resilience.ratelimiter.RateLimiter.RefillRate
 
 /** Thread safe, constant memory, constant time, & linear-refill-rate implementation of TokenBucket. All public API's
   * use discrete values for tokens and lazily call `refill` function to update bucket state. Under the hood, the bucket
   * is modeled as a continuous flow tokens using Double's.
-  * @param capacity
+  * @param bucketCapacity
   *   max allowed tokens
   * @param tokensPerMillisecond
   *   refill rate
@@ -20,32 +20,29 @@ import io.mienks.resilience.ratelimiter.TokenBucket.RefillRate
   *   current tokens in bucket
   */
 class TokenBucket[F[_]: Monad: Clock] private (
-    capacity: Double,
+    bucketCapacity: Double,
     refillRate: RefillRate,
     lastRefill: AtomicCell[F, FiniteDuration],
     tokens: Ref[F, Double]
-) {
+) extends RateLimiter[F] {
 
-  def capacity(): F[Long] = Applicative[F].pure(capacity.toLong)
+  private val tokensPerMillisecond: Double = refillRate.requests.toDouble / refillRate.period.toMillis
+
+  def capacity: F[Int] = Applicative[F].pure(bucketCapacity.toInt)
 
   /** Get the amount of current tokens
     * @return
     */
-  def tokens(): F[Long] =
-    refill() *> tokens.get.map(_.toLong)
-
-  /** Try to consume a single token
-    * @return
-    *   if consumed or not
-    */
-  def consume(): F[Boolean] = consume(tokens = 1)
+  def requests: F[Int] =
+    refill() *> tokens.get.map(_.toInt)
 
   /** Try to consume specified tokens
     * @param tokens
+    *   default 1
     * @return
     *   if consumed or not
     */
-  def consume(tokens: Long): F[Boolean] =
+  def consume(tokens: Int = 1): F[Boolean] =
     refill() *> this.tokens.modify { availableTokens =>
       if (availableTokens >= tokens)
         (availableTokens - tokens, true)
@@ -56,11 +53,11 @@ class TokenBucket[F[_]: Monad: Clock] private (
   /** Consume all available tokens at once
     * @return
     */
-  def consumeRemaining(): F[Long] =
+  def consumeRemaining(): F[Int] =
     refill() *>
       this.tokens
         .getAndUpdate(availableTokens => availableTokens - math.floor(availableTokens))
-        .map(math.floor(_).toLong)
+        .map(math.floor(_).toInt)
 
   /*
   DEV NOTE: Public API's which read or update bucket (tokens ref) must first call this method.
@@ -70,8 +67,8 @@ class TokenBucket[F[_]: Monad: Clock] private (
       now <- Clock[F].realTime
       millisecondsSinceLastRefill = (now - last).toMillis
       // unit math: tokens/ms * ms = tokens
-      newTokens = refillRate.tokensPerMillisecond * millisecondsSinceLastRefill
-      _ <- tokens.update(t => math.min(capacity, t + newTokens))
+      newTokens = tokensPerMillisecond * millisecondsSinceLastRefill
+      _ <- tokens.update(t => math.min(bucketCapacity, t + newTokens))
     } yield now
   }
 
@@ -80,8 +77,8 @@ class TokenBucket[F[_]: Monad: Clock] private (
 object TokenBucket {
 
   def apply[F[_]: Async](
-      capacity: Long,
-      initial: Long,
+      capacity: Int,
+      initial: Int,
       refillRate: RefillRate
   ): F[TokenBucket[F]] =
     for {
@@ -104,19 +101,10 @@ object TokenBucket {
       tokens
     )
 
-  def full[F[_]: Async](capacity: Long, refillRate: RefillRate): F[TokenBucket[F]] =
+  def full[F[_]: Async](capacity: Int, refillRate: RefillRate): F[TokenBucket[F]] =
     apply(capacity, initial = capacity, refillRate)
 
-  def empty[F[_]: Async](capacity: Long, refillRate: RefillRate): F[TokenBucket[F]] =
+  def empty[F[_]: Async](capacity: Int, refillRate: RefillRate): F[TokenBucket[F]] =
     apply(capacity, initial = 0, refillRate)
 
-  /** Rate of tokens / period
-    * @param tokens
-    *   number of tokens (numerator)
-    * @param period
-    *   unit of time (denominator)
-    */
-  final case class RefillRate(tokens: Long, period: FiniteDuration) {
-    lazy val tokensPerMillisecond: Double = tokens.toDouble / period.toMillis
-  }
 }
