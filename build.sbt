@@ -5,18 +5,18 @@ ThisBuild / scalaVersion := "2.13.18"
 ThisBuild / licenses := Seq(License.MIT)
 
 lazy val root = (project in file("."))
-  .aggregate(core, benchmarks, rateLimiter)
+  .aggregate(circuitBreaker, benchmarks, rateLimiter)
   .settings(
-    name := "CircuitBreaker4Cats"
+    name := "resilience-4-cats"
   )
 
 val CatsEffectVersion = "3.6.3"
 val MunitCatsEffectVersion = "2.1.0"
 
-lazy val core = project
-  .in(file("core"))
+lazy val circuitBreaker = project
+  .in(file("circuit-breaker"))
   .settings(
-    name := "CircuitBreaker",
+    name := "circuit-breaker",
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % CatsEffectVersion,
       "org.typelevel" %% "munit-cats-effect" % MunitCatsEffectVersion % Test,
@@ -31,13 +31,13 @@ lazy val benchmarks = project
     name := "benchmarks",
     publish / skip := true
   )
-  .dependsOn(core)
+  .dependsOn(circuitBreaker)
   .enablePlugins(JmhPlugin)
 
 lazy val rateLimiter = project
   .in(file("rate-limiter"))
   .settings(
-    name := "RateLimiter",
+    name := "rate-limiter",
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % CatsEffectVersion,
       "org.typelevel" %% "munit-cats-effect" % MunitCatsEffectVersion % Test,
