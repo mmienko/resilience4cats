@@ -7,7 +7,7 @@ ThisBuild / licenses := Seq(License.MIT)
 lazy val root = (project in file("."))
   .aggregate(circuitBreaker, benchmarks, rateLimiter)
   .settings(
-    name := "resilience-4-cats"
+    name := "resilience4cats"
   )
 
 val CatsEffectVersion = "3.6.3"

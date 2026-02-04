@@ -34,6 +34,8 @@ trait RateLimiter[F[_]] {
 
 object RateLimiter {
 
+  private val RefillRatePattern = """(\d+)\s*(request|requests)\s*/\s*(.+)\s*""".r
+
   def apply[F[_]: Sync](
       capacity: Int,
       initialCapacity: Int,
@@ -61,11 +63,9 @@ object RateLimiter {
   final case class RefillRate(requests: Int, period: FiniteDuration)
 
   object RefillRate {
-    private val RefillRatePattern = """(\d+)\s*requests\s*/\s*(.+)\s*""".r
-
     def parse(rate: String): Option[RefillRate] = {
       rate match {
-        case RefillRatePattern(reqStr, durStr) =>
+        case RefillRatePattern(reqStr, _, durStr) =>
           try {
             Duration(durStr) match {
               case _: Duration.Infinite   => None
@@ -79,6 +79,9 @@ object RateLimiter {
       }
     }
 
+  }
+
+  object syntax {
     implicit class RefillRateOps(val requests: Int) extends AnyVal {
       def per(period: FiniteDuration): RefillRate = RefillRate(requests, period)
     }
@@ -88,7 +91,7 @@ object RateLimiter {
         val input = sc.s(args: _*)
         // Example input: "5 requests / 1 minute"
         input match {
-          case RefillRatePattern(reqStr, durStr) =>
+          case RefillRatePattern(reqStr, _, durStr) =>
             Duration(durStr) match {
               case _: Duration.Infinite =>
                 throw new IllegalArgumentException(s"Invalid period rate syntax: $input")
@@ -100,5 +103,6 @@ object RateLimiter {
         }
       }
     }
+
   }
 }

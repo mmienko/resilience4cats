@@ -14,7 +14,9 @@ abstract class RateLimiterTests extends CatsEffectSuite {
   protected def buildEmptyRateLimiter(capacity: Int, refillRate: RefillRate): IO[RateLimiter[IO]]
 
   test("refill rate syntax") {
-    import RateLimiter.RefillRate._
+    import RateLimiter.RefillRate.parse
+    import RateLimiter.syntax._
+
     assertEquals(1.per(1.second), RefillRate(1, 1.second))
     assertEquals(12.per(6.seconds), RefillRate(12, 6.seconds))
 

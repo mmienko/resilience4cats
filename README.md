@@ -1,5 +1,49 @@
-# CircuitBreaker4Cats
-The `CircuitBreaker` models a concurrent state machine used to provide stability and prevent cascading failures in
+# Resilience4Cats
+Resilience structures not included in Cats Effect standard library, such as `CircuitBreaker` and `RateLimiter`.
+
+## Rate-Limiter
+The `rate-limiter` uses the GCRA algorithm, an equivalent to the token-bucket algorithm, to track the rate of requests.
+
+### Usage
+Rate-Limiters are build with a total capacity, an initial capacity that may be different than the total
+capacity, and a linear refill rate. The refill rate has syntax extensions for a more human-readable format.
+
+```scala
+def apply[F[_]: Sync](
+      capacity: Int,
+      initialCapacity: Int,
+      rate: RefillRate
+  ): F[RateLimiter[F]]
+
+final case class RefillRate(requests: Int, period: FiniteDuration)
+```
+
+For convenience, you can create an full rate limiter, with the initial capacity equal to the total capacity,
+or a empty rate limiter, with the initial capacity equal to 0.
+
+```scala
+def empty[F[_]: Sync](capacity: Int, rate: RefillRate): F[RateLimiter[F]]
+
+def full[F[_]: Sync](capacity: Int, rate: RefillRate): F[RateLimiter[F]]
+
+```
+
+Example with syntax extension for rate config:
+```scala
+import cats.effect._
+import io.mienks.resilience.ratelimiter.RateLimiter
+import io.mienks.resilience.ratelimiter.RateLimiter.syntax._
+import scala.concurrent.duration._
+for {
+  rl <- RateLimiter.full[IO](capacity = 10, rate = rate"1 request / 1 second")
+  consumed <- rl.consume()
+  _ <- if (consumed) IO.println("Request allowed")
+       else IO.println("Request rejected")
+} yield ()
+```
+
+## Circuit-Breaker
+The `circuit-breaker` models a concurrent state machine used to provide stability and prevent cascading failures in
 distributed systems. 
 
 It can be in any of these 3 states:
@@ -13,7 +57,7 @@ It can be in any of these 3 states:
      counters reset. If there are any failures, then the circuit breaker is reset back to `Open` with another reset
      timeout according to `backoff` policy, but no longer than `maxResetTimeout`.
 
-## Usage
+### Usage
 
 ```scala
 import cats.effect._
