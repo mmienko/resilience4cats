@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "2.13.18"
-ThisBuild / organization := "io.mienks"
+ThisBuild / organization := "io.github.mmienko"
 ThisBuild / homepage     := Some(url("https://github.com/mmienko/resilience4cats"))
 ThisBuild / licenses     := Seq(License.MIT)
 ThisBuild / developers   := List(
