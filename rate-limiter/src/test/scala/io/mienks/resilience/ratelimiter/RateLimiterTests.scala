@@ -2,6 +2,7 @@ package io.mienks.resilience.ratelimiter
 
 import cats.effect.IO
 import cats.effect.testkit.TestControl
+import cats.implicits.{catsSyntaxOptionId, none}
 import io.mienks.resilience.ratelimiter.RateLimiter.RefillRate
 import munit.CatsEffectSuite
 
@@ -12,9 +13,25 @@ abstract class RateLimiterTests extends CatsEffectSuite {
   protected def buildFullRateLimiter(capacity: Int, refillRate: RefillRate): IO[RateLimiter[IO]]
   protected def buildEmptyRateLimiter(capacity: Int, refillRate: RefillRate): IO[RateLimiter[IO]]
 
+  test("refill rate syntax") {
+    import RateLimiter.RefillRate._
+    assertEquals(1.per(1.second), RefillRate(1, 1.second))
+    assertEquals(12.per(6.seconds), RefillRate(12, 6.seconds))
+
+    assertEquals(parse("8 requests / 2 minutes"), RefillRate(8, 2.minutes).some)
+    assertEquals(parse("500 requests / 4 hours"), RefillRate(500, 4.hours).some)
+    assertEquals(parse("abc requests / 4 hours"), none[RefillRate])
+    assertEquals(parse("500 requests / xyz hours"), none[RefillRate])
+
+    assertEquals(rate"8 requests / 2 minutes", RefillRate(8, 2.minutes))
+    assertEquals(rate"500 requests / 4 hours", RefillRate(500, 4.hours))
+    intercept[IllegalArgumentException](rate"abc requests / 4 hours")
+    intercept[NumberFormatException](rate"500 requests / xyz hours")
+  }
+
   test("capacity() returns correct value") {
     for {
-      rl <- buildFullRateLimiter(capacity = 7, RefillRate(1, 1.second))
+      rl  <- buildFullRateLimiter(capacity = 7, RefillRate(1, 1.second))
       cap <- rl.capacity
     } yield assertEquals(cap, 7)
   }
@@ -32,12 +49,12 @@ abstract class RateLimiterTests extends CatsEffectSuite {
         rl <- buildEmptyRateLimiter(capacity = 1, RefillRate(1, 1.second))
         _  <- rl.requests.map(assertEquals(_, 0))
 
-        _  <- rl.consume(1).map(assertEquals(_, false))
-        _  <- rl.requests.map(assertEquals(_, 0))
+        _ <- rl.consume(1).map(assertEquals(_, false))
+        _ <- rl.requests.map(assertEquals(_, 0))
 
-        _  <- IO.sleep(1.second)
-        _  <- rl.requests.map(assertEquals(_, 1))
-        _  <- rl.consume(1).map(assertEquals(_, true))
+        _ <- IO.sleep(1.second)
+        _ <- rl.requests.map(assertEquals(_, 1))
+        _ <- rl.consume(1).map(assertEquals(_, true))
       } yield ()
     }
   }
@@ -61,10 +78,10 @@ abstract class RateLimiterTests extends CatsEffectSuite {
     TestControl.executeEmbed {
       for {
         rl <- buildFullRateLimiter(capacity = 3, RefillRate(1, 1.second))
-        _ <- rl.consume().map(assertEquals(_, true))
-        _ <- rl.consume().map(assertEquals(_, true))
-        _ <- rl.consume().map(assertEquals(_, true))
-        _ <- rl.consume().map(assertEquals(_, false))
+        _  <- rl.consume().map(assertEquals(_, true))
+        _  <- rl.consume().map(assertEquals(_, true))
+        _  <- rl.consume().map(assertEquals(_, true))
+        _  <- rl.consume().map(assertEquals(_, false))
 
         _ <- IO.sleep(1.second)
         _ <- rl.consume().map(assertEquals(_, true))
@@ -100,14 +117,14 @@ abstract class RateLimiterTests extends CatsEffectSuite {
         rl <- buildFullRateLimiter(capacity = 1, RefillRate(1, 1.second))
         _  <- rl.requests.map(assertEquals(_, 1))
 
-        _  <- rl.consume(2).map(assertEquals(_, false))
-        _  <- rl.requests.map(assertEquals(_, 1))
+        _ <- rl.consume(2).map(assertEquals(_, false))
+        _ <- rl.requests.map(assertEquals(_, 1))
 
-        _  <- rl.consume().map(assertEquals(_, true))
-        _  <- rl.requests.map(assertEquals(_, 0))
+        _ <- rl.consume().map(assertEquals(_, true))
+        _ <- rl.requests.map(assertEquals(_, 0))
 
-        _  <- IO.sleep(1.second)
-        _  <- rl.requests.map(assertEquals(_, 1))
+        _ <- IO.sleep(1.second)
+        _ <- rl.requests.map(assertEquals(_, 1))
       } yield ()
     }
   }
@@ -118,17 +135,17 @@ abstract class RateLimiterTests extends CatsEffectSuite {
         rl <- buildFullRateLimiter(capacity = 1, RefillRate(2, 1.second))
         _  <- rl.requests.map(assertEquals(_, 1))
 
-        _  <- rl.consume(2).map(assertEquals(_, false))
-        _  <- rl.requests.map(assertEquals(_, 1))
+        _ <- rl.consume(2).map(assertEquals(_, false))
+        _ <- rl.requests.map(assertEquals(_, 1))
 
-        _  <- rl.consume(1).map(assertEquals(_, true))
-        _  <- rl.requests.map(assertEquals(_, 0))
+        _ <- rl.consume(1).map(assertEquals(_, true))
+        _ <- rl.requests.map(assertEquals(_, 0))
 
-        _  <- IO.sleep(500.millis)
-        _  <- rl.requests.map(assertEquals(_, 1))
+        _ <- IO.sleep(500.millis)
+        _ <- rl.requests.map(assertEquals(_, 1))
 
-        _  <- IO.sleep(1.second)
-        _  <- rl.requests.map(assertEquals(_, 1))
+        _ <- IO.sleep(1.second)
+        _ <- rl.requests.map(assertEquals(_, 1))
       } yield ()
     }
   }
@@ -143,20 +160,20 @@ abstract class RateLimiterTests extends CatsEffectSuite {
         _  <- rl.consume(1).map(assertEquals(_, false))
         _  <- rl.requests.map(assertEquals(_, 0))
 
-        _  <- IO.sleep(1.second)
-        _  <- rl.consume(1).map(assertEquals(_, true))
+        _ <- IO.sleep(1.second)
+        _ <- rl.consume(1).map(assertEquals(_, true))
 
-        _  <- IO.sleep(1.second)
-        _  <- rl.requests.map(assertEquals(_, 3))
-        _  <- rl.consumeRemaining().map(assertEquals(_, 3))
-        _  <- rl.requests.map(assertEquals(_, 0))
-        _  <- rl.consumeRemaining().map(assertEquals(_, 0))
+        _ <- IO.sleep(1.second)
+        _ <- rl.requests.map(assertEquals(_, 3))
+        _ <- rl.consumeRemaining().map(assertEquals(_, 3))
+        _ <- rl.requests.map(assertEquals(_, 0))
+        _ <- rl.consumeRemaining().map(assertEquals(_, 0))
 
-        _  <- IO.sleep(250.millis)
-        _  <- rl.consumeRemaining().map(assertEquals(_, 0))
+        _ <- IO.sleep(250.millis)
+        _ <- rl.consumeRemaining().map(assertEquals(_, 0))
 
-        _  <- IO.sleep(250.millis)
-        _  <- rl.consumeRemaining().map(assertEquals(_, 1))
+        _ <- IO.sleep(250.millis)
+        _ <- rl.consumeRemaining().map(assertEquals(_, 1))
       } yield ()
     }
   }

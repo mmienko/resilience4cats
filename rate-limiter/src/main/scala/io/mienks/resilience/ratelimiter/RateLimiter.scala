@@ -2,7 +2,7 @@ package io.mienks.resilience.ratelimiter
 
 import cats.effect.{Async, Sync}
 
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.{Duration, FiniteDuration}
 import cats.syntax.all._
 
 trait RateLimiter[F[_]] {
@@ -60,4 +60,45 @@ object RateLimiter {
     */
   final case class RefillRate(requests: Int, period: FiniteDuration)
 
+  object RefillRate {
+    private val RefillRatePattern = """(\d+)\s*requests\s*/\s*(.+)\s*""".r
+
+    def parse(rate: String): Option[RefillRate] = {
+      rate match {
+        case RefillRatePattern(reqStr, durStr) =>
+          try {
+            Duration(durStr) match {
+              case _: Duration.Infinite   => None
+              case period: FiniteDuration =>
+                RefillRate(requests = reqStr.toInt, period = period).some
+            }
+          } catch {
+            case _: NumberFormatException => None
+          }
+        case _ => None
+      }
+    }
+
+    implicit class RefillRateOps(val requests: Int) extends AnyVal {
+      def per(period: FiniteDuration): RefillRate = RefillRate(requests, period)
+    }
+
+    implicit class RateInterpolator(val sc: StringContext) extends AnyVal {
+      def rate(args: Any*): RefillRate = {
+        val input = sc.s(args: _*)
+        // Example input: "5 requests / 1 minute"
+        input match {
+          case RefillRatePattern(reqStr, durStr) =>
+            Duration(durStr) match {
+              case _: Duration.Infinite =>
+                throw new IllegalArgumentException(s"Invalid period rate syntax: $input")
+              case period: FiniteDuration =>
+                RefillRate(requests = reqStr.toInt, period = period)
+            }
+          case _ =>
+            throw new IllegalArgumentException(s"Invalid rate syntax: $input")
+        }
+      }
+    }
+  }
 }
