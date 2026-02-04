@@ -9,6 +9,12 @@ import io.mienks.resilience.ratelimiter.RateLimiter.RefillRate
 /** Thread safe, constant memory, constant time GCRA rate limiter. Core state is a single AtomicLong (TAT) updated via
   * CAS loop — no boxing, no allocation.
   *
+  * GCRA works by tracking a timestamp initialized to the past and by breaking down the timeline into discrete emission
+  * periods. This is analogous to a leaky bucket that leaks at a constant rate defined by the emission period. Each
+  * request consumes a token from the bucket. The bucket is empty when the timestamp is in the future. The bucket is
+  * refilled as the current time moves to the right on the timeline; the size of the bucket is capped by sliding the
+  * timestamp to the the right if it drifts too far into the past.
+  *
   * @param requestCapacity
   *   max requests allowed in a single burst
   * @param emissionPeriodNanos
