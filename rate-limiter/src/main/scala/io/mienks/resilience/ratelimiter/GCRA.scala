@@ -42,7 +42,7 @@ class GCRA[F[_]: Sync] private (
     */
   override def requests: F[Int] =
     for {
-      now <- Clock[F].realTime.map(_.toNanos)
+      now <- Clock[F].monotonic.map(_.toNanos)
       res <- Sync[F].delay {
         val available = (now - getNextRequestTime(now)) / emissionPeriodNanos
         clamp(available, 0L, requestCapacity.toLong).toInt
@@ -57,7 +57,7 @@ class GCRA[F[_]: Sync] private (
     */
   override def consume(tokens: Int = 1): F[Boolean] =
     for {
-      now <- Clock[F].realTime.map(_.toNanos)
+      now <- Clock[F].monotonic.map(_.toNanos)
       res <- Sync[F].delay { consumeUnsafe(arrivedAt = now, tokens) }
     } yield res
 
@@ -67,7 +67,7 @@ class GCRA[F[_]: Sync] private (
     */
   override def consumeRemaining(): F[Int] =
     for {
-      now <- Clock[F].realTime.map(_.toNanos)
+      now <- Clock[F].monotonic.map(_.toNanos)
       i   <- Sync[F].delay {
         var i = 0
         while (consumeUnsafe(arrivedAt = now, tokens = 1)) {
@@ -111,7 +111,7 @@ object GCRA {
       rate: RefillRate
   ): F[GCRA[F]] =
     for {
-      now  <- Clock[F].realTime
+      now  <- Clock[F].monotonic
       gcra <- Sync[F].delay {
         val emissionIntervalNanos = rate.period.toNanos / rate.requests
         new GCRA[F](
