@@ -26,7 +26,7 @@ class TokenBucket[F[_]: Monad: Clock] private (
     tokens: Ref[F, Double]
 ) extends RateLimiter[F] {
 
-  private val tokensPerMillisecond: Double = refillRate.requests.toDouble / refillRate.period.toMillis
+  private val tokensPerNanosecond: Double = refillRate.requests.toDouble / refillRate.period.toNanos
 
   def capacity: F[Int] = Applicative[F].pure(bucketCapacity.toInt)
 
@@ -64,10 +64,10 @@ class TokenBucket[F[_]: Monad: Clock] private (
    */
   private def refill(): F[Unit] = lastRefill.evalUpdate { last =>
     for {
-      now <- Clock[F].realTime
-      millisecondsSinceLastRefill = (now - last).toMillis
+      now <- Clock[F].monotonic
+      nanosecondsSinceLastRefill = (now - last).toNanos
       // unit math: tokens/ms * ms = tokens
-      newTokens = tokensPerMillisecond * millisecondsSinceLastRefill
+      newTokens = tokensPerNanosecond * nanosecondsSinceLastRefill
       _ <- tokens.update(t => math.min(bucketCapacity, t + newTokens))
     } yield now
   }
@@ -82,7 +82,7 @@ object TokenBucket {
       refillRate: RefillRate
   ): F[TokenBucket[F]] =
     for {
-      lastRefill <- Clock[F].realTime.flatMap(AtomicCell[F].of)
+      lastRefill <- Clock[F].monotonic.flatMap(AtomicCell[F].of)
 
       tokens <- Ref[F].of(
         (
