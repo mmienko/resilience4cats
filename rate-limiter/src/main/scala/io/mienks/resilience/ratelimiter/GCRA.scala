@@ -44,7 +44,8 @@ class GCRA[F[_]: Sync] private (
     for {
       now <- Clock[F].monotonic.map(_.toNanos)
       res <- Sync[F].delay {
-        val available = (now - getNextRequestTime(now)) / emissionPeriodNanos
+        val current   = nextRequestTime.get()
+        val available = (now - getNextRequestTime(current, now)) / emissionPeriodNanos
         clamp(available, 0L, requestCapacity.toLong).toInt
       }
     } yield res
@@ -81,11 +82,12 @@ class GCRA[F[_]: Sync] private (
   private def consumeUnsafe(arrivedAt: Long, tokens: Int): Boolean = {
     var allowed = false
     while ({
+      val current            = nextRequestTime.get()
       val cost               = emissionPeriodNanos * tokens
-      val newNextRequestTime = getNextRequestTime(arrivedAt) + cost
+      val newNextRequestTime = getNextRequestTime(current, arrivedAt) + cost
       if (arrivedAt < newNextRequestTime)
         ExitLoop
-      else if (nextRequestTime.compareAndSet(nextRequestTime.get(), newNextRequestTime)) {
+      else if (nextRequestTime.compareAndSet(current, newNextRequestTime)) {
         allowed = true
         ExitLoop
       } else
@@ -96,8 +98,8 @@ class GCRA[F[_]: Sync] private (
   }
 
   /** Get the current next request time, or slide window to keep bucket full */
-  private def getNextRequestTime(arrivedAt: Long) =
-    Math.max(nextRequestTime.get(), arrivedAt - totalRequestsPeriodNanos)
+  private def getNextRequestTime(current: Long, arrivedAt: Long) =
+    Math.max(current, arrivedAt - totalRequestsPeriodNanos)
 }
 
 object GCRA {
