@@ -58,6 +58,7 @@ class GCRA[F[_]: Sync] private (
     */
   override def consume(tokens: Int = 1): F[Boolean] =
     for {
+      _   <- Sync[F].raiseWhen(tokens < 1)(new IllegalArgumentException(s"tokens must be positive, got: $tokens"))
       now <- Clock[F].monotonic.map(_.toNanos)
       res <- Sync[F].delay { consumeUnsafe(arrivedAt = now, tokens) }
     } yield res
