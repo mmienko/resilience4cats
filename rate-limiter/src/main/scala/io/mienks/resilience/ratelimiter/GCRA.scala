@@ -114,6 +114,13 @@ object GCRA {
       rate: RefillRate
   ): F[GCRA[F]] =
     for {
+      _ <- Sync[F].raiseWhen(capacity < 1)(new IllegalArgumentException(s"capacity must be positive, got: $capacity"))
+      _ <- Sync[F].raiseWhen(initialCapacity < 0)(
+        new IllegalArgumentException(s"initialCapacity must be non-negative, got: $initialCapacity")
+      )
+      _ <- Sync[F].raiseWhen(rate.requests <= 0)(
+        new IllegalArgumentException(s"rate.requests must be positive, got: ${rate.requests}")
+      )
       now  <- Clock[F].monotonic
       gcra <- Sync[F].delay {
         val emissionIntervalNanos = rate.period.toNanos / rate.requests
