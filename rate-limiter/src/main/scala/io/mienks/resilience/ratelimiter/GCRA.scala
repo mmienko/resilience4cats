@@ -81,10 +81,10 @@ class GCRA[F[_]: Sync] private (
 
   /** CAS loop on AtomicLong. Hot path with no allocations. */
   private def consumeUnsafe(arrivedAt: Long, tokens: Int): Boolean = {
+    val cost    = emissionPeriodNanos * tokens
     var allowed = false
     while ({
       val current            = nextRequestTime.get()
-      val cost               = emissionPeriodNanos * tokens
       val newNextRequestTime = getNextRequestTime(current, arrivedAt) + cost
       if (arrivedAt < newNextRequestTime)
         ExitLoop
