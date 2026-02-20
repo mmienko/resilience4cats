@@ -46,7 +46,7 @@ class GCRA[F[_]: Sync] private (
       res <- Sync[F].delay {
         val current   = nextRequestTime.get()
         val available = (now - getNextRequestTime(current, now)) / emissionPeriodNanos
-        clamp(available, 0L, requestCapacity.toLong).toInt
+        clamp(value = available, min = 0L, max = requestCapacity.toLong).toInt
       }
     } yield res
 
@@ -69,15 +69,9 @@ class GCRA[F[_]: Sync] private (
     */
   override def consumeRemaining(): F[Int] =
     for {
-      now <- Clock[F].monotonic.map(_.toNanos)
-      i   <- Sync[F].delay {
-        var i = 0
-        while (consumeUnsafe(arrivedAt = now, tokens = 1)) {
-          i += 1
-        }
-        i
-      }
-    } yield i
+      now      <- Clock[F].monotonic.map(_.toNanos)
+      consumed <- Sync[F].delay { consumeRemainingUnsafe(arrivedAt = now) }
+    } yield consumed
 
   /** CAS loop on AtomicLong. Hot path with no allocations. */
   private def consumeUnsafe(arrivedAt: Long, tokens: Int): Boolean = {
@@ -96,6 +90,25 @@ class GCRA[F[_]: Sync] private (
     }) ()
 
     allowed
+  }
+
+  /** Single-CAS drain of all available tokens. */
+  private def consumeRemainingUnsafe(arrivedAt: Long): Int = {
+    var consumed = 0
+    while ({
+      val current      = nextRequestTime.get()
+      val effectiveNRT = getNextRequestTime(current, arrivedAt)
+      val available    =
+        clamp(value = (arrivedAt - effectiveNRT) / emissionPeriodNanos, min = 0L, max = requestCapacity.toLong).toInt
+      if (available <= 0)
+        ExitLoop
+      else if (nextRequestTime.compareAndSet(current, effectiveNRT + emissionPeriodNanos * available)) {
+        consumed = available
+        ExitLoop
+      } else
+        ContinueLoop
+    }) ()
+    consumed
   }
 
   /** Get the current next request time, or slide window to keep bucket full */
