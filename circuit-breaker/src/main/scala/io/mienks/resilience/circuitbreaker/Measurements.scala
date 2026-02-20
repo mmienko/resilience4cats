@@ -78,7 +78,7 @@ final class CountBasedSlidingWindowMeasurements[F[_]: Sync](val windowSize: Int,
     totalFailures = 0
   }
 
-  override def isInitialized: F[Boolean] = Sync[F].pure(totalMeasurements >= minNumberOfCalls)
+  override def isInitialized: F[Boolean] = Sync[F].delay(totalMeasurements >= minNumberOfCalls)
 }
 
 /** Private constructor to force wrapping in Sync[F].delay because class initializes an array
@@ -147,7 +147,7 @@ final class TimeBasedSlidingWindowMeasurements[F[_]: Sync] private (
     }
   }
 
-  override def isInitialized: F[Boolean] = Sync[F].pure(totalMeasurements >= minNumberOfCalls)
+  override def isInitialized: F[Boolean] = Sync[F].delay(totalMeasurements >= minNumberOfCalls)
 }
 
 object TimeBasedSlidingWindowMeasurements {
