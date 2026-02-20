@@ -43,4 +43,10 @@ class GCRATests extends RateLimiterTests {
     interceptIO[IllegalArgumentException](GCRA[IO](capacity = 5, initialCapacity = 0, RefillRate(0, 1.second)))
   }
 
+  test("apply rejects configuration that would overflow Long") {
+    interceptIO[ArithmeticException](
+      GCRA[IO](capacity = Int.MaxValue, initialCapacity = 0, RefillRate(1, 24.hours))
+    )
+  }
+
 }

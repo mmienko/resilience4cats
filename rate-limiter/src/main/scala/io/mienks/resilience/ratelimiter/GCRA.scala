@@ -124,6 +124,8 @@ object GCRA {
       now  <- Clock[F].monotonic
       gcra <- Sync[F].delay {
         val emissionIntervalNanos = rate.period.toNanos / rate.requests
+        requireNoOverflow(emissionIntervalNanos, capacity.toLong, "emissionInterval * capacity")
+        requireNoOverflow(emissionIntervalNanos, initialCapacity.toLong, "emissionInterval * initialCapacity")
         new GCRA[F](
           requestCapacity = capacity,
           emissionPeriodNanos = emissionIntervalNanos,
@@ -140,5 +142,10 @@ object GCRA {
 
   private def clamp(value: Long, min: Long, max: Long): Long =
     Math.max(min, Math.min(max, value))
+
+  /** @throws ArithmeticException if a * b overflows Long */
+  private def requireNoOverflow(a: Long, b: Long, label: String): Unit =
+    if (Math.multiplyHigh(a, b) != 0)
+      throw new ArithmeticException(s"Long overflow: $label ($a * $b)")
 
 }
