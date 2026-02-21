@@ -7,9 +7,9 @@ import munit.CatsEffectSuite
 class CountBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
 
   test("CountBasedSlidingWindowMeasurements with all successes") {
-    val measurements = new CountBasedSlidingWindowMeasurements[IO](windowSize = 5, minNumberOfCalls = 1)
     for {
-      snapshots <- measurements.record(isFailure = false).replicateA(10)
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 5, minNumberOfCalls = 1)
+      snapshots    <- measurements.record(isFailure = false).replicateA(10)
     } yield {
       assertEquals(
         snapshots,
@@ -30,9 +30,9 @@ class CountBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
   }
 
   test("CountBasedSlidingWindowMeasurements with all failures") {
-    val measurements = new CountBasedSlidingWindowMeasurements[IO](windowSize = 5, minNumberOfCalls = 1)
     for {
-      snapshots <- measurements.record(isFailure = true).replicateA(10)
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 5, minNumberOfCalls = 1)
+      snapshots    <- measurements.record(isFailure = true).replicateA(10)
     } yield {
       assertEquals(
         snapshots,
@@ -53,11 +53,11 @@ class CountBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
   }
 
   test("CountBasedSlidingWindowMeasurements with steady failures") {
-    val measurements = new CountBasedSlidingWindowMeasurements[IO](windowSize = 6, minNumberOfCalls = 1)
-    val action       = measurements.record(isFailure = false).flatMap { snapshot1 =>
-      measurements.record(isFailure = true).map(snapshot2 => List(snapshot1, snapshot2))
-    }
     for {
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 6, minNumberOfCalls = 1)
+      action = measurements.record(isFailure = false).flatMap { snapshot1 =>
+        measurements.record(isFailure = true).map(snapshot2 => List(snapshot1, snapshot2))
+      }
       snapshots <- action.replicateA(6).map(_.flatten)
     } yield {
       assertEquals(
@@ -81,13 +81,13 @@ class CountBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
   }
 
   test("CountBasedSlidingWindowMeasurements with sudden failures") {
-    val measurements = new CountBasedSlidingWindowMeasurements[IO](windowSize = 6, minNumberOfCalls = 1)
     for {
-      _   <- measurements.record(isFailure = false).replicateA(9)
-      ss1 <- measurements.record(isFailure = true)
-      ss2 <- measurements.record(isFailure = true)
-      ss3 <- measurements.record(isFailure = true)
-      ss4 <- measurements.record(isFailure = false)
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 6, minNumberOfCalls = 1)
+      _            <- measurements.record(isFailure = false).replicateA(9)
+      ss1          <- measurements.record(isFailure = true)
+      ss2          <- measurements.record(isFailure = true)
+      ss3          <- measurements.record(isFailure = true)
+      ss4          <- measurements.record(isFailure = false)
     } yield {
       assertEquals(
         List(ss1, ss2, ss3, ss4),
@@ -102,9 +102,9 @@ class CountBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
   }
 
   test("isInitialized returns true after enough recordings") {
-    val measurements = new CountBasedSlidingWindowMeasurements[IO](windowSize = 5, minNumberOfCalls = 3)
     for {
-      initialized <- measurements.isInitialized
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 5, minNumberOfCalls = 3)
+      initialized  <- measurements.isInitialized
       _ = assert(!initialized, "Measurements should NOT be initialized initially")
       _ <- measurements.record(isFailure = false).replicateA(2)
       _ = assert(!initialized, "Measurements should NOT be initialized before enough calls")

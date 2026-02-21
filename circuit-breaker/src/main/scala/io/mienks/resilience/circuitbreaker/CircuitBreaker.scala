@@ -2,7 +2,6 @@ package io.mienks.resilience.circuitbreaker
 
 import cats.effect._
 import cats.effect.implicits._
-import cats.effect.std.Mutex
 import cats.syntax.all._
 import cats.{Applicative, Eq, Monad, Show}
 
@@ -281,15 +280,12 @@ object CircuitBreaker {
       // validate early since CountBasedSlidingWindowMeasurements will also validate, but with a more generic message
       _            <- Sync[F].delay(require(numberOfHalfOpenCalls > 0, "numberOfHalfOpenCalls > 0"))
       state        <- Concurrent[F].ref[State](Closed)
-      stateLock    <- Mutex[F]
       measurements <- measurementStrategy match {
         case MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements, minNumberOfCalls) =>
-          Sync[F].delay(
-            new CountBasedSlidingWindowMeasurements[F](
-              windowSize = numberOfMeasurements,
-              minNumberOfCalls = minNumberOfCalls.getOrElse(numberOfMeasurements)
-            )
-          )
+          CountBasedSlidingWindowMeasurements[F](
+            windowSize = numberOfMeasurements,
+            minNumberOfCalls = minNumberOfCalls.getOrElse(numberOfMeasurements)
+          ).widen[Measurements[F]]
 
         case MeasurementStrategy.TimeBasedSlidingWindow(length, minNumberOfCalls, precision) =>
           TimeBasedSlidingWindowMeasurements[F](
@@ -300,10 +296,9 @@ object CircuitBreaker {
 
         case MeasurementStrategy.Custom(measurements) => measurements.pure[F]
       }
-      halfOpenMeasurements <- Ref[F].of((0, false))
+      halfOpenMeasurements <- Ref[F].of(HalfOpenMeasurement.empty)
     } yield new SyncCircuitBreaker[F](
       state,
-      stateLock,
       failureRateThreshold,
       measurements,
       numberOfHalfOpenCalls,
@@ -471,13 +466,21 @@ object CircuitBreaker {
     }
   }
 
+  private final case class HalfOpenMeasurement(numberOfCalls: Int = 0, hasFailure: Boolean = false) {
+    def addMeasurement(isFailure: Boolean): HalfOpenMeasurement =
+      copy(numberOfCalls = numberOfCalls + 1, hasFailure = hasFailure || isFailure)
+  }
+
+  private object HalfOpenMeasurement {
+    def empty: HalfOpenMeasurement = HalfOpenMeasurement()
+  }
+
   private final class SyncCircuitBreaker[F[_]](
       circuitBreakerState: Ref[F, CircuitBreaker.State],
-      stateLock: Mutex[F],
       failureRateThreshold: Double,
       measurements: Measurements[F],
       numberOfHalfOpenCalls: Int,
-      halfOpenMeasurements: Ref[F, (Int, Boolean)],
+      halfOpenMeasurements: Ref[F, HalfOpenMeasurement],
       resetTimeout: FiniteDuration,
       backoff: FiniteDuration => FiniteDuration,
       maxResetTimeout: Duration,
@@ -495,14 +498,13 @@ object CircuitBreaker {
     require(maxResetTimeout > Duration.Zero, "maxResetTimeout > 0")
 
     private val NoCallback: F[Unit]    = F.unit
-    private lazy val resetMeasurements = halfOpenMeasurements.set((0, false)) >> measurements.reset
+    private lazy val resetMeasurements = halfOpenMeasurements.set(HalfOpenMeasurement()) >> measurements.reset
 
     override def state: F[CircuitBreaker.State] = circuitBreakerState.get
 
     override def doOnRejected(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -520,7 +522,6 @@ object CircuitBreaker {
     override def doOnClosed(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -538,7 +539,6 @@ object CircuitBreaker {
     override def doOnHalfOpen(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -556,7 +556,6 @@ object CircuitBreaker {
     override def doOnOpen(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -622,42 +621,36 @@ object CircuitBreaker {
 
     private def updateMeasurementsAndState(isFailure: Boolean): F[Unit] =
       /*
-      The lock funnels all requests through the critical section below. If thread, T1, starts before thread, T2,
-      but finishes after T2, and T2 opened the CB, then T1 should not update measurements. Only after CB is
-      re-closed, then should new requests record their measurements.
-       
-      This is vulnerable to the ABA problem, however inputs are assumed to finish during the resetTimeout per
-      documentation. If needed, the solution would involve stamping the state, perhaps with
-      `cats.effect.Unique[F].unique`.
+      The state check below is vulnerable to the ABA problem (a fiber from a previous Closed epoch recording into a
+      fresh window). However, inputs are assumed to finish during the resetTimeout per documentation. If needed, the
+      solution would involve stamping the state, perhaps with `cats.effect.Unique[F].unique`.
        */
-      stateLock.lock.use { _ =>
-        circuitBreakerState.get.flatMap {
-          case Closed =>
-            for {
-              snapshot      <- measurements.record(isFailure)
-              isInitialized <- measurements.isInitialized
-              breachedThreshold = isInitialized && snapshot.failureRate >= failureRateThreshold
-              fa <-
-                if (breachedThreshold)
-                  for {
-                    start    <- Clock[F].monotonic
-                    realTime <- realTimeInMillis
-                    fa       <- circuitBreakerState.modify {
-                      case Closed =>
-                        (Open(startedAt = start, realTime, resetTimeout), onOpen.voidError)
-                      case open: Open =>
-                        (open, NoCallback)
-                      case halfOpen: HalfOpen =>
-                        (halfOpen, NoCallback)
-                    }
-                  } yield fa
-                else
-                  NoCallback.pure[F]
-            } yield fa // Run potential `onOpen` outside critical section to not hold up waiting fibers
+      circuitBreakerState.get.flatMap {
+        case Closed =>
+          for {
+            snapshot      <- measurements.record(isFailure)
+            isInitialized <- measurements.isInitialized
+            breachedThreshold = isInitialized && snapshot.failureRate >= failureRateThreshold
+            fa <-
+              if (breachedThreshold)
+                for {
+                  start    <- Clock[F].monotonic
+                  realTime <- realTimeInMillis
+                  fa       <- circuitBreakerState.modify {
+                    case Closed =>
+                      (Open(startedAt = start, realTime, resetTimeout), onOpen.voidError)
+                    case open: Open =>
+                      (open, NoCallback)
+                    case halfOpen: HalfOpen =>
+                      (halfOpen, NoCallback)
+                  }
+                } yield fa
+              else
+                NoCallback.pure[F]
+          } yield fa
 
-          case _ =>
-            NoCallback.pure[F]
-        }
+        case _ =>
+          NoCallback.pure[F]
       }.flatten
 
     private def executeFromOpenState[A](open: Open, fa: F[A], poll: Poll[F], isError: A => Boolean): F[A] = {
@@ -738,21 +731,17 @@ object CircuitBreaker {
       }
 
     private def updateAfterCompletedHalfOpenTask(open: Open, now: FiniteDuration, isFailure: Boolean): F[Unit] =
-      stateLock.lock
-        .use(_ => halfOpenMeasurements.updateAndGet(cur => (cur._1 + 1, cur._2 || isFailure)))
-        .flatMap { case (curNumCalls, haveAnyFailed) =>
+      halfOpenMeasurements
+        .updateAndGet(_.addMeasurement(isFailure))
+        .flatMap { case HalfOpenMeasurement(numberOfCalls, hasFailure) =>
           /*
-          Assume `numberOfCallsInHalfOpen` is `N` and `totalMeasurements` is `T`.
-          - Only one fiber will ever read `T == N`. The atomic updates to HalfOpen state allow at most `N` fibers to
-            access the `record` method of measurements. Canceled fibers don't reach this method.
-          - The mutex on `record` results in atomic updates to `T`. Therefore, `T` is monotonically increasing, hence
-            only one fiber sees `T == N`.
-          - Only this fiber can mutate circuit breaker state AND measurements (all fibers must have called `record`
-            for `T` to equal `N`). Therefore, it's safe to call `reset` and `set` methods. Seeing `T == N` is like
-            acquiring a logical Lock.
+          Only one fiber will ever read `numberOfCalls == numberOfHalfOpenCalls`. The atomic updates to HalfOpen
+          state allow at most `numberOfHalfOpenCalls` fibers to reach this method. Canceled fibers don't reach
+          here. `halfOpenMeasurements.updateAndGet` is atomic, so counts are monotonically increasing, hence
+          only one fiber sees the final count. That fiber exclusively handles the state transition and reset.
            */
-          if (curNumCalls == numberOfHalfOpenCalls) // only a single fiber will reach this
-            if (haveAnyFailed)
+          if (numberOfCalls == numberOfHalfOpenCalls) // only a single fiber will exclusively handle this
+            if (hasFailure)
               resetMeasurements >> nextOpenState(open, now).flatMap(circuitBreakerState.set) >> onOpen.voidError
             else
               resetMeasurements >> circuitBreakerState.set(Closed) >> onClosed.voidError
