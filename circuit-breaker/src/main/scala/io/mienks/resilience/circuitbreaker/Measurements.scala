@@ -112,12 +112,12 @@ final class TimeBasedSlidingWindowMeasurements[F[_]: Sync] private (
 ) extends Measurements[F] {
 
   override def record(isFailure: Boolean): F[Snapshot] =
-    Clock[F].monotonic.map(_.toMillis).flatMap { now =>
+    Clock[F].monotonic.map(_.toNanos).flatMap { now =>
       stateRef.modify(_.record(isFailure, now))
     }
 
   override def reset: F[Unit] =
-    Clock[F].monotonic.map(_.toMillis).flatMap { now =>
+    Clock[F].monotonic.map(_.toNanos).flatMap { now =>
       stateRef.update(_.reset(now))
     }
 
@@ -139,9 +139,9 @@ object TimeBasedSlidingWindowMeasurements {
       stateRef <- Ref[F].of(
         State.initial(
           numberOfBuckets = numberOfBuckets,
-          bucketLengthInMillis = bucketSize.toMillis,
+          bucketLengthInNanos = bucketSize.toNanos,
           minNumberOfCalls = minNumberOfCalls,
-          createdAt = now.toMillis
+          createdAt = now.toNanos
         )
       )
     } yield new TimeBasedSlidingWindowMeasurements[F](stateRef)
@@ -159,14 +159,14 @@ object TimeBasedSlidingWindowMeasurements {
       buckets: Vector[TimeBucket],
       index: Int,
       numberOfBuckets: Int,
-      bucketLengthInMillis: Long,
+      bucketLengthInNanos: Long,
       totalMeasurements: Int,
       totalFailures: Int,
       minNumberOfCalls: Int
   ) {
 
     def record(isFailure: Boolean, now: Long): (State, Snapshot) = {
-      val timeBucketsSinceLastUpdate = (now - buckets(index).createdAt) / bucketLengthInMillis
+      val timeBucketsSinceLastUpdate = (now - buckets(index).createdAt) / bucketLengthInNanos
 
       var curIndex             = index
       var curTotalMeasurements = totalMeasurements
@@ -203,21 +203,21 @@ object TimeBasedSlidingWindowMeasurements {
     def isInitialized: Boolean = totalMeasurements >= minNumberOfCalls
 
     def reset(now: Long): State =
-      State.initial(numberOfBuckets, bucketLengthInMillis, minNumberOfCalls, now)
+      State.initial(numberOfBuckets, bucketLengthInNanos, minNumberOfCalls, now)
   }
 
   private[circuitbreaker] object State {
 
     def initial(
         numberOfBuckets: Int,
-        bucketLengthInMillis: Long,
+        bucketLengthInNanos: Long,
         minNumberOfCalls: Int,
         createdAt: Long
     ): State = State(
       buckets = Vector.fill(numberOfBuckets)(TimeBucket.empty(createdAt = createdAt)),
       index = 0,
       numberOfBuckets = numberOfBuckets,
-      bucketLengthInMillis = bucketLengthInMillis,
+      bucketLengthInNanos = bucketLengthInNanos,
       totalMeasurements = 0,
       totalFailures = 0,
       minNumberOfCalls = minNumberOfCalls
