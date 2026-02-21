@@ -248,7 +248,7 @@ object CircuitBreaker {
     *   is the number of calls to determine if circuit breaker should move from HalfOpen to Closed
     * @param backoff
     *   is a function from FiniteDuration to FiniteDuration used to determine the `resetTimeout` when in the `HalfOpen`
-    * @param axResetTimeout
+    * @param maxResetTimeout
     *   is the maximum timeout the circuit breaker is allowed to use when applying the `backoff`
     * @param exceptionFilter
     *   a predicate that returns true for exceptions which should trigger the circuitbreaker, and false for those which
