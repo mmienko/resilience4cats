@@ -210,7 +210,7 @@ object CircuitBreaker {
     * @tparam F
     * @return
     */
-  def apply[F[_]: Async](
+  def apply[F[_]: Sync](
       measurementStrategy: MeasurementStrategy[F] =
         MeasurementStrategy.CountBasedSlidingWindow[F](numberOfMeasurements = 100),
       failureRateThreshold: Double = 1.0,
@@ -263,7 +263,7 @@ object CircuitBreaker {
     *   callback for when the circuit breaker transitions to Open
     * @return
     */
-  def of[F[_]: Async](
+  def of[F[_]: Sync](
       measurementStrategy: MeasurementStrategy[F],
       failureRateThreshold: Double,
       resetTimeout: FiniteDuration,
@@ -279,7 +279,7 @@ object CircuitBreaker {
     for {
       // validate early since CountBasedSlidingWindowMeasurements will also validate, but with a more generic message
       _            <- Sync[F].delay(require(numberOfHalfOpenCalls > 0, "numberOfHalfOpenCalls > 0"))
-      state        <- Concurrent[F].ref[State](Closed)
+      state        <- Ref[F].of[State](Closed)
       measurements <- measurementStrategy match {
         case MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements, minNumberOfCalls) =>
           CountBasedSlidingWindowMeasurements[F](
