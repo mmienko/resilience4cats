@@ -48,8 +48,8 @@ distributed systems.
 
 It can be in any of these 3 states:
 
-1. `CircuitBreaker.Closed`: The starting state, all effects are evaluated. Errors are counted over a sliding
-     window. When the error count reaches the `maxFailures` threshold, the breaker is tripped into `Open` state.
+1. `CircuitBreaker.Closed`: The starting state, all effects are evaluated. Outcomes are recorded over a sliding
+   window. When the failure rate reaches the `failureRateThreshold`, the breaker is tripped into `Open` state.
 1. `CircuitBreaker.Open`: The state where all tasks are rejected with `CircuitBreaker.RejectedExecution` until
      the `resetTimeout` has passed. The next call to the circuit breaker will move the state into `Half-Open`.
 1. `CircuitBreaker.HalfOpen`: The state which allows `numberOfHalfOpenCalls` tasks to go through as a way of
@@ -81,7 +81,7 @@ You can fully configure the circuit breaker like so
 
 ```scala
 CircuitBreaker.of[IO](
-    measurementStrategy: MeasurementStrategy[F] = MeasurementStrategy.FixedSlidingWindow[F](numberOfMeasurements = 100),
+    measurementStrategy = MeasurementStrategy.FixedSlidingWindow[IO](numberOfMeasurements = 100),
     failureRateThreshold = 1.0,
     resetTimeout = 10.seconds,
     numberOfHalfOpenCalls = 1,

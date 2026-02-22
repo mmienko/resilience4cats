@@ -54,6 +54,7 @@ class CircuitBreakerBenchmarks {
 
     circuitBreakerOpen = CircuitBreaker[IO](
       resetTimeout = DoNotResetDuringBenchmarks,
+      maxResetTimeout = DoNotResetDuringBenchmarks,
       measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1)
     ).flatTap(openCircuitBreaker)
       .unsafeRunSync()

@@ -2,7 +2,6 @@ package io.mienks.resilience.circuitbreaker
 
 import cats.effect._
 import cats.effect.implicits._
-import cats.effect.std.Mutex
 import cats.syntax.all._
 import cats.{Applicative, Eq, Monad, Show}
 
@@ -14,8 +13,8 @@ import scala.concurrent.duration._
   *
   * It can be in any of these 3 states:
   *
-  *   1. [[CircuitBreaker.Closed]]: The starting state, all effects are evaluated. Errors are counted over a sliding
-  *      window. When the error count reaches the `maxFailures` threshold, the breaker is tripped into `Open` state.
+  *   1. [[CircuitBreaker.Closed]]: The starting state, all effects are evaluated. Outcomes are recorded over a sliding
+  *      window. When the failure rate reaches the `failureRateThreshold`, the breaker is tripped into `Open` state.
   *   1. [[CircuitBreaker.Open]]: The state where all tasks are rejected with [[CircuitBreaker.RejectedExecution]] until
   *      the `resetTimeout` has passed. The next call to the circuit breaker will move the state into `Half-Open`.
   *   1. [[CircuitBreaker.HalfOpen]]: The state which allows `numberOfHalfOpenCalls` tasks to go through as a way of
@@ -47,7 +46,7 @@ import scala.concurrent.duration._
   *
   * {{{
   *   CircuitBreaker.of[IO](
-  *     measurementStrategy: MeasurementStrategy[F] = MeasurementStrategy.FixedSlidingWindow[F](numberOfMeasurements = 100),
+  *     measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow[IO](numberOfMeasurements = 100),
   *     failureRateThreshold = 1.0,
   *     resetTimeout = 10.seconds,
   *     numberOfHalfOpenCalls = 1,
@@ -80,10 +79,10 @@ import scala.concurrent.duration._
 trait CircuitBreaker[F[_]] {
 
   /** Monitors CircuitBreaker [[CircuitBreaker.State]]. If [[CircuitBreaker.Closed]], then it will execute the effect
-    * `fa` and records any exceptions per configuration. If [[CircuitBreaker.Open]], the returns *
+    * `fa` and record outcomes per configuration. If [[CircuitBreaker.Open]], then returns
     * [[CircuitBreaker.RejectedExecution]] in the result's error channel. If [[CircuitBreaker.HalfOpen]] then it may
-    * execute the effect `fa` and may move back to [[CircuitBreaker.Closed]] or [[CircuitBreaker.Open]], if the result
-    * passes the checks.
+    * execute the effect `fa` and may move back to [[CircuitBreaker.Closed]] or [[CircuitBreaker.Open]] depending on the
+    * outcome.
     *
     * @param fa
     *   an effect that eventually completes. Effects that never complete may keep CircuitBreaker trapped in the
@@ -195,10 +194,11 @@ object CircuitBreaker {
     * @param measurementStrategy
     *   the strategy to count errors while circuit breaker is `Closed`
     * @param failureRateThreshold
-    *   percentage of failures over the measurements window to Open the circuit breaker
+    *   the failure rate as a ratio in the range `(0.0, 1.0]` at or above which the circuit breaker transitions to
+    *   [[Open]]. For example, `0.5` means 50% failures. Must be strictly greater than zero.
     * @param resetTimeout
     *   is the timeout to wait in the `Open` state before attempting a close of the circuit breaker (but without the
-    *   backoff function applied)
+    *   backoff function applied). Must be less than or equal to maxResetTimeout.
     * @param numberOfHalfOpenCalls
     *   is the number of calls to determine if circuit breaker should move from HalfOpen to Closed
     * @param backoff
@@ -208,10 +208,8 @@ object CircuitBreaker {
     * @param exceptionFilter
     *   a predicate that returns true for exceptions which should trigger the circuitbreaker, and false for those which
     *   should not (ie be treated the same as success)
-    * @tparam F
-    * @return
     */
-  def apply[F[_]: Async](
+  def apply[F[_]: Sync](
       measurementStrategy: MeasurementStrategy[F] =
         MeasurementStrategy.CountBasedSlidingWindow[F](numberOfMeasurements = 100),
       failureRateThreshold: Double = 1.0,
@@ -241,15 +239,16 @@ object CircuitBreaker {
     * @param measurementStrategy
     *   the strategy to count errors while circuit breaker is `Closed`
     * @param failureRateThreshold
-    *   percentage of failures over the measurements window to Open the circuit breaker
+    *   the failure rate as a ratio in the range `(0.0, 1.0]` at or above which the circuit breaker transitions to
+    *   [[Open]]. For example, `0.5` means 50% failures. Must be strictly greater than zero.
     * @param resetTimeout
     *   is the timeout to wait in the `Open` state before attempting a close of the circuit breaker (but without the
-    *   backoff function applied)
+    *   backoff function applied). Must be less than or equal to maxResetTimeout.
     * @param numberOfHalfOpenCalls
     *   is the number of calls to determine if circuit breaker should move from HalfOpen to Closed
     * @param backoff
     *   is a function from FiniteDuration to FiniteDuration used to determine the `resetTimeout` when in the `HalfOpen`
-    * @param axResetTimeout
+    * @param maxResetTimeout
     *   is the maximum timeout the circuit breaker is allowed to use when applying the `backoff`
     * @param exceptionFilter
     *   a predicate that returns true for exceptions which should trigger the circuitbreaker, and false for those which
@@ -262,9 +261,8 @@ object CircuitBreaker {
     *   callback for when the circuit breaker transitions to HalfOpen
     * @param onOpen
     *   callback for when the circuit breaker transitions to Open
-    * @return
     */
-  def of[F[_]: Async](
+  def of[F[_]: Sync](
       measurementStrategy: MeasurementStrategy[F],
       failureRateThreshold: Double,
       resetTimeout: FiniteDuration,
@@ -280,16 +278,13 @@ object CircuitBreaker {
     for {
       // validate early since CountBasedSlidingWindowMeasurements will also validate, but with a more generic message
       _            <- Sync[F].delay(require(numberOfHalfOpenCalls > 0, "numberOfHalfOpenCalls > 0"))
-      state        <- Concurrent[F].ref[State](Closed)
-      stateLock    <- Mutex[F]
+      state        <- Ref[F].of[State](Closed)
       measurements <- measurementStrategy match {
         case MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements, minNumberOfCalls) =>
-          Sync[F].delay(
-            new CountBasedSlidingWindowMeasurements[F](
-              windowSize = numberOfMeasurements,
-              minNumberOfCalls = minNumberOfCalls.getOrElse(numberOfMeasurements)
-            )
-          )
+          CountBasedSlidingWindowMeasurements[F](
+            windowSize = numberOfMeasurements,
+            minNumberOfCalls = minNumberOfCalls.getOrElse(numberOfMeasurements)
+          ).widen[Measurements[F]]
 
         case MeasurementStrategy.TimeBasedSlidingWindow(length, minNumberOfCalls, precision) =>
           TimeBasedSlidingWindowMeasurements[F](
@@ -300,10 +295,9 @@ object CircuitBreaker {
 
         case MeasurementStrategy.Custom(measurements) => measurements.pure[F]
       }
-      halfOpenMeasurements <- Ref[F].of((0, false))
+      halfOpenMeasurements <- Ref[F].of(HalfOpenMeasurement.empty)
     } yield new SyncCircuitBreaker[F](
       state,
-      stateLock,
       failureRateThreshold,
       measurements,
       numberOfHalfOpenCalls,
@@ -327,7 +321,7 @@ object CircuitBreaker {
       * @param numberOfMeasurements
       *   the window size
       * @param minNumberOfCalls
-      *   is the minimum number if cals to `protect` before opening the circuit breaker. If unset, then it equal to
+      *   the minimum number of calls to `protect` before the circuit breaker can open. If unset, defaults to
       *   [[numberOfMeasurements]].
       */
     final case class CountBasedSlidingWindow[F[_]](numberOfMeasurements: Int, minNumberOfCalls: Option[Int] = None)
@@ -344,7 +338,7 @@ object CircuitBreaker {
       * @param length
       *   the size of window; period of time when measurements are valid
       * @param minNumberOfCalls
-      *   is the minimum number if cals to `protect` before opening the circuit breaker.
+      *   the minimum number of calls to `protect` before the circuit breaker can open.
       * @param precision
       *   the bucket size
       */
@@ -366,8 +360,7 @@ object CircuitBreaker {
     */
   type Timestamp = Long
 
-  /** An enumeration that models the internal state of [[CircuitBreaker]], kept in an `AtomicReference` for
-    * synchronization.
+  /** An enumeration that models the internal state of [[CircuitBreaker]], kept in a `Ref` for concurrency-safe access.
     *
     * The initial state when initializing a [[CircuitBreaker]] is [[Closed]]. The available states:
     *
@@ -383,12 +376,10 @@ object CircuitBreaker {
     *
     * Contract:
     *
-    *   - Exceptions increment the `failures` counter
-    *   - Successes reset the failure count to zero
-    *   - When the `failures` counter reaches the `maxFailures` count, the breaker is tripped into the `Open` state
-    *
-    * @param failures
-    *   is the current failures count
+    *   - All outcomes (successes and failures) are recorded in the sliding window via the configured
+    *     [[MeasurementStrategy]]
+    *   - When the failure rate over the sliding window reaches the `failureRateThreshold`, the breaker is tripped into
+    *     the [[Open]] state
     */
   case object Closed extends State
 
@@ -397,13 +388,13 @@ object CircuitBreaker {
     * Contract:
     *
     *   - all tasks fail fast with `RejectedExecution`
-    *   - after the configured `resetTimeout`, the circuit breaker enters a [[HalfOpen]] state, allowing one task to go
-    *     through for testing the connection
+    *   - after the configured `resetTimeout`, the circuit breaker enters a [[HalfOpen]] state, allowing up to
+    *     `numberOfHalfOpenCalls` tasks through for testing the connection
     *
     * @param startedAt
-    *   nanotime in milliseconds when the transition to `Open` happened. Used for timing tasks in the Java process.
+    *   monotonic time (from `Clock[F].monotonic`) when the transition to `Open` happened
     * @param realTime
-    *   wall clock time in milliseconds since epoch when the transition to `Open` happened. Used for human debugging.
+    *   wall clock time in milliseconds since epoch when the transition to `Open` happened, used for human debugging
     * @param resetTimeout
     *   is the current `resetTimeout` that is applied to this `Open` state, to be passed to the `backoff` function for
     *   the next transition from `HalfOpen` to `Open`, in case the reset attempt fails
@@ -412,13 +403,9 @@ object CircuitBreaker {
       extends State
       with Reason {
 
-    /** The timestamp in milliseconds since the epoch, specifying when the `Open` state is to transition to
-      * [[HalfOpen]].
+    /** The monotonic time at which the `Open` state is to transition to [[HalfOpen]].
       *
-      * It is calculated as:
-      * ```scala
-      * startedAt + resetTimeout.toMillis
-      * ```
+      * Calculated as `startedAt + resetTimeout`.
       */
     val nextHalfOpenTime: FiniteDuration = startedAt + resetTimeout
     lazy val startedAtUtc: String        = asUtc(realTime).toString
@@ -432,18 +419,17 @@ object CircuitBreaker {
       Show.show(open => s"Circuit Breaker opened at ${open.startedAtUtc}, next reset is at ${open.nextHalfOpenUtc}")
   }
 
-  /** [[State]] of the [[CircuitBreaker]] in which the circuit breaker has already allowed a task to go through, as a
+  /** [[State]] of the [[CircuitBreaker]] in which the circuit breaker allows a limited number of tasks through as a
     * reset attempt, in order to test the connection.
     *
     * Contract:
     *
-    *   - The first task when `Open` has expired is allowed through without failing fast, just before the circuit
-    *     breaker is evolved into the `HalfOpen` state
-    *   - All tasks attempted in `HalfOpen` fail-fast with an exception just as in [[Open]] state
-    *   - If that task attempt succeeds, the breaker is reset back to the `Closed` state, with the `resetTimeout` and
-    *     the `failures` count also reset to initial values
-    *   - If the first call fails, the breaker is tripped again into the `Open` state (the `resetTimeout` is passed to
-    *     the `backoff` function)
+    *   - Up to `numberOfHalfOpenCalls` tasks are allowed through without failing fast
+    *   - Additional tasks beyond that limit fail-fast with [[RejectedExecution]] just as in [[Open]] state
+    *   - If all `numberOfHalfOpenCalls` tasks succeed, the breaker is reset back to the [[Closed]] state with
+    *     measurements cleared
+    *   - If any of the tasks fail, the breaker is tripped again into the [[Open]] state (the `resetTimeout` is passed
+    *     to the `backoff` function)
     */
   final case class HalfOpen(open: Open, remainingNumberOfCalls: Int) extends State with Reason {
     def withDecrementedNumberOfCalls: HalfOpen = copy(remainingNumberOfCalls = remainingNumberOfCalls - 1)
@@ -471,13 +457,21 @@ object CircuitBreaker {
     }
   }
 
+  private final case class HalfOpenMeasurement(numberOfCalls: Int = 0, hasFailure: Boolean = false) {
+    def addMeasurement(isFailure: Boolean): HalfOpenMeasurement =
+      copy(numberOfCalls = numberOfCalls + 1, hasFailure = hasFailure || isFailure)
+  }
+
+  private object HalfOpenMeasurement {
+    def empty: HalfOpenMeasurement = HalfOpenMeasurement()
+  }
+
   private final class SyncCircuitBreaker[F[_]](
       circuitBreakerState: Ref[F, CircuitBreaker.State],
-      stateLock: Mutex[F],
       failureRateThreshold: Double,
       measurements: Measurements[F],
       numberOfHalfOpenCalls: Int,
-      halfOpenMeasurements: Ref[F, (Int, Boolean)],
+      halfOpenMeasurements: Ref[F, HalfOpenMeasurement],
       resetTimeout: FiniteDuration,
       backoff: FiniteDuration => FiniteDuration,
       maxResetTimeout: Duration,
@@ -489,20 +483,20 @@ object CircuitBreaker {
   )(implicit F: Sync[F])
       extends CircuitBreaker[F] {
 
-    require(failureRateThreshold >= 0.0, "failureRateThreshold >= 0.0")
-    require(failureRateThreshold <= 1.0, "failureRateThreshold <= 1.0")
-    require(resetTimeout > Duration.Zero, "resetTimeout > 0")
-    require(maxResetTimeout > Duration.Zero, "maxResetTimeout > 0")
+    require(failureRateThreshold > 0.0, "failureRateThreshold must be > 0.0")
+    require(failureRateThreshold <= 1.0, "failureRateThreshold must be <= 1.0")
+    require(resetTimeout > Duration.Zero, "resetTimeout must be > 0")
+    require(maxResetTimeout > Duration.Zero, "maxResetTimeout must be > 0")
+    require(resetTimeout <= maxResetTimeout, "resetTimeout must be <= maxResetTimeout")
 
     private val NoCallback: F[Unit]    = F.unit
-    private lazy val resetMeasurements = halfOpenMeasurements.set((0, false)) >> measurements.reset
+    private lazy val resetMeasurements = halfOpenMeasurements.set(HalfOpenMeasurement()) >> measurements.reset
 
     override def state: F[CircuitBreaker.State] = circuitBreakerState.get
 
     override def doOnRejected(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -520,7 +514,6 @@ object CircuitBreaker {
     override def doOnClosed(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -538,7 +531,6 @@ object CircuitBreaker {
     override def doOnHalfOpen(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -556,7 +548,6 @@ object CircuitBreaker {
     override def doOnOpen(callback: F[Unit]): CircuitBreaker[F] =
       new SyncCircuitBreaker(
         circuitBreakerState = circuitBreakerState,
-        stateLock = stateLock,
         failureRateThreshold = failureRateThreshold,
         measurements = measurements,
         numberOfHalfOpenCalls = numberOfHalfOpenCalls,
@@ -622,42 +613,36 @@ object CircuitBreaker {
 
     private def updateMeasurementsAndState(isFailure: Boolean): F[Unit] =
       /*
-      The lock funnels all requests through the critical section below. If thread, T1, starts before thread, T2,
-      but finishes after T2, and T2 opened the CB, then T1 should not update measurements. Only after CB is
-      re-closed, then should new requests record their measurements.
-       
-      This is vulnerable to the ABA problem, however inputs are assumed to finish during the resetTimeout per
-      documentation. If needed, the solution would involve stamping the state, perhaps with
-      `cats.effect.Unique[F].unique`.
+      The state check below is vulnerable to the ABA problem (a fiber from a previous Closed epoch recording into a
+      fresh window). However, inputs are assumed to finish during the resetTimeout per documentation. If needed, the
+      solution would involve stamping the state, perhaps with `cats.effect.Unique[F].unique`.
        */
-      stateLock.lock.use { _ =>
-        circuitBreakerState.get.flatMap {
-          case Closed =>
-            for {
-              snapshot      <- measurements.record(isFailure)
-              isInitialized <- measurements.isInitialized
-              breachedThreshold = isInitialized && snapshot.failureRate >= failureRateThreshold
-              fa <-
-                if (breachedThreshold)
-                  for {
-                    start    <- Clock[F].monotonic
-                    realTime <- realTimeInMillis
-                    fa       <- circuitBreakerState.modify {
-                      case Closed =>
-                        (Open(startedAt = start, realTime, resetTimeout), onOpen.voidError)
-                      case open: Open =>
-                        (open, NoCallback)
-                      case halfOpen: HalfOpen =>
-                        (halfOpen, NoCallback)
-                    }
-                  } yield fa
-                else
-                  NoCallback.pure[F]
-            } yield fa // Run potential `onOpen` outside critical section to not hold up waiting fibers
+      circuitBreakerState.get.flatMap {
+        case Closed =>
+          for {
+            snapshot      <- measurements.record(isFailure)
+            isInitialized <- measurements.isInitialized
+            breachedThreshold = isInitialized && snapshot.failureRate >= failureRateThreshold
+            fa <-
+              if (breachedThreshold)
+                for {
+                  start    <- Clock[F].monotonic
+                  realTime <- realTimeInMillis
+                  fa       <- circuitBreakerState.modify {
+                    case Closed =>
+                      (Open(startedAt = start, realTime, resetTimeout), onOpen.voidError)
+                    case open: Open =>
+                      (open, NoCallback)
+                    case halfOpen: HalfOpen =>
+                      (halfOpen, NoCallback)
+                  }
+                } yield fa
+              else
+                NoCallback.pure[F]
+          } yield fa
 
-          case _ =>
-            NoCallback.pure[F]
-        }
+        case _ =>
+          NoCallback.pure[F]
       }.flatten
 
     private def executeFromOpenState[A](open: Open, fa: F[A], poll: Poll[F], isError: A => Boolean): F[A] = {
@@ -738,21 +723,17 @@ object CircuitBreaker {
       }
 
     private def updateAfterCompletedHalfOpenTask(open: Open, now: FiniteDuration, isFailure: Boolean): F[Unit] =
-      stateLock.lock
-        .use(_ => halfOpenMeasurements.updateAndGet(cur => (cur._1 + 1, cur._2 || isFailure)))
-        .flatMap { case (curNumCalls, haveAnyFailed) =>
+      halfOpenMeasurements
+        .updateAndGet(_.addMeasurement(isFailure))
+        .flatMap { case HalfOpenMeasurement(numberOfCalls, hasFailure) =>
           /*
-          Assume `numberOfCallsInHalfOpen` is `N` and `totalMeasurements` is `T`.
-          - Only one fiber will ever read `T == N`. The atomic updates to HalfOpen state allow at most `N` fibers to
-            access the `record` method of measurements. Canceled fibers don't reach this method.
-          - The mutex on `record` results in atomic updates to `T`. Therefore, `T` is monotonically increasing, hence
-            only one fiber sees `T == N`.
-          - Only this fiber can mutate circuit breaker state AND measurements (all fibers must have called `record`
-            for `T` to equal `N`). Therefore, it's safe to call `reset` and `set` methods. Seeing `T == N` is like
-            acquiring a logical Lock.
+          Only one fiber will ever read `numberOfCalls == numberOfHalfOpenCalls`. The atomic updates to HalfOpen
+          state allow at most `numberOfHalfOpenCalls` fibers to reach this method. Canceled fibers don't reach
+          here. `halfOpenMeasurements.updateAndGet` is atomic, so counts are monotonically increasing, hence
+          only one fiber sees the final count. That fiber exclusively handles the state transition and reset.
            */
-          if (curNumCalls == numberOfHalfOpenCalls) // only a single fiber will reach this
-            if (haveAnyFailed)
+          if (numberOfCalls == numberOfHalfOpenCalls) // only a single fiber will exclusively handle this
+            if (hasFailure)
               resetMeasurements >> nextOpenState(open, now).flatMap(circuitBreakerState.set) >> onOpen.voidError
             else
               resetMeasurements >> circuitBreakerState.set(Closed) >> onClosed.voidError

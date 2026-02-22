@@ -1,11 +1,11 @@
 package io.mienks.resilience.circuitbreaker
 
-import cats.effect.{Clock, Sync}
+import cats.effect.{Clock, Ref, Sync}
 import cats.kernel.Eq
 import cats.syntax.all._
 import Measurements.Snapshot
 
-import java.util
+import scala.collection.immutable
 import scala.concurrent.duration._
 
 trait Measurements[F[_]] {
@@ -23,7 +23,7 @@ object Measurements {
       windowSize: Int,
       minNumberOfCalls: Int
   ): F[CountBasedSlidingWindowMeasurements[F]] =
-    Sync[F].delay(new CountBasedSlidingWindowMeasurements[F](windowSize, minNumberOfCalls))
+    CountBasedSlidingWindowMeasurements[F](windowSize, minNumberOfCalls)
 
   def timeBasedSlidingWindow[F[_]: Sync](
       numberOfBuckets: Int,
@@ -32,7 +32,18 @@ object Measurements {
   ): F[TimeBasedSlidingWindowMeasurements[F]] =
     TimeBasedSlidingWindowMeasurements(numberOfBuckets, bucketSize, minNumberOfCalls)
 
+  /** A point-in-time view of the sliding window's aggregate counters.
+    *
+    * @param totalMeasurements
+    *   the number of recorded outcomes currently in the window
+    * @param totalFailures
+    *   the number of recorded failures currently in the window
+    */
   final case class Snapshot(totalMeasurements: Int, totalFailures: Int) {
+
+    /** The ratio of failures to total measurements. Callers must ensure `totalMeasurements > 0`; dividing by zero
+      * yields `NaN`.
+      */
     def failureRate: Double = totalFailures.toDouble / totalMeasurements
   }
 
@@ -41,113 +52,88 @@ object Measurements {
   }
 }
 
-final class CountBasedSlidingWindowMeasurements[F[_]: Sync](val windowSize: Int, minNumberOfCalls: Int)
-    extends Measurements[F] {
-
-  // Circular array (via memory optimized BitSet) of time buckets, each element in array is a record of success or failure.
-  private val failures = new util.BitSet(windowSize)
-  private var index    = 0
-
-  // Aggregate values
-  private var totalMeasurements = 0
-  private var totalFailures     = 0
-
-  override def record(isFailure: Boolean): F[Snapshot] = Sync[F].delay {
-    // Track the number of timeBuckets so far, until max windowSize is reached. Allows comparisons
-    // with min required timeBuckets.
-    totalMeasurements = math.min(totalMeasurements + 1, windowSize)
-    // incrementing the circular array points to oldest item
-    index = (index + 1) % windowSize
-    // remove oldest-item/stale-measurement from aggregate view
-    if (failures.get(index))
-      totalFailures -= 1
-    // Override stale measurement
-    if (isFailure) {
-      failures.set(index)
-      totalFailures += 1
-    } else
-      failures.clear(index)
-
-    Snapshot(totalMeasurements, totalFailures)
-  }
-
-  override def reset: F[Unit] = Sync[F].delay {
-    failures.clear()
-    index = 0
-    totalMeasurements = 0
-    totalFailures = 0
-  }
-
-  override def isInitialized: F[Boolean] = Sync[F].delay(totalMeasurements >= minNumberOfCalls)
-}
-
-/** Private constructor to force wrapping in Sync[F].delay because class initializes an array
-  */
-final class TimeBasedSlidingWindowMeasurements[F[_]: Sync] private (
-    createdAt: Long,
-    numberOfBuckets: Int,
-    bucketLengthInMillis: Long,
-    minNumberOfCalls: Int
+final class CountBasedSlidingWindowMeasurements[F[_]: Sync] private (
+    stateRef: Ref[F, CountBasedSlidingWindowMeasurements.State]
 ) extends Measurements[F] {
-  import TimeBasedSlidingWindowMeasurements.TimeBucket
-
-  private val windowPeriod = bucketLengthInMillis * numberOfBuckets
-
-  // Circular array of time buckets, each bucket is a partial aggregation of measurements for a particular slice of time.
-  private val timeBuckets = Array.fill(numberOfBuckets)(new TimeBucket(createdAt = createdAt, failures = 0, total = 0))
-  private var index       = 0
-
-  // Aggregate values for Snapshot; maintaining these avoids scanning the entire array.
-  private var totalMeasurements = 0
-  private var totalFailures     = 0
 
   override def record(isFailure: Boolean): F[Snapshot] =
-    Clock[F].monotonic.map(_.toMillis).flatMap { now =>
-      Sync[F].delay {
-        // For the current point in time, check if we are in the current bucket or need to move ahead to a new one.
-        val timeBucketsSinceLastUpdate = (now - timeBuckets(index).createdAt) / bucketLengthInMillis
-        if (timeBucketsSinceLastUpdate > 0) {
-          var bucketsToMoveBy =
-            math.min(
-              timeBucketsSinceLastUpdate,
-              numberOfBuckets
-            ) // A number greater than size of array will result in duplicate operations
-          do {
-            bucketsToMoveBy -= 1
-            index = (index + 1) % numberOfBuckets
-            val bucket = timeBuckets(index)
-            // as we move ahead to the new time bucket, remove stale measurements from aggregate view
-            totalMeasurements -= bucket.total
-            totalFailures -= bucket.failures
-            // empty the partial aggregation from the stale time bucket
-            bucket.reset(createdAt = now)
-          } while (bucketsToMoveBy > 0)
-        }
+    stateRef.modify(_.record(isFailure))
 
-        // Update the latest measurement bucket and aggregate values
-        timeBuckets(index).total += 1
-        totalMeasurements += 1
-        if (isFailure) {
-          timeBuckets(index).failures += 1
-          totalFailures += 1
-        }
+  override def reset: F[Unit] =
+    stateRef.update(_.reset)
 
-        Snapshot(totalMeasurements, totalFailures)
-      }
+  override def isInitialized: F[Boolean] =
+    stateRef.get.map(_.isInitialized)
+}
+
+object CountBasedSlidingWindowMeasurements {
+
+  def apply[F[_]: Sync](windowSize: Int, minNumberOfCalls: Int): F[CountBasedSlidingWindowMeasurements[F]] =
+    Ref[F]
+      .of(State.empty(windowSize, minNumberOfCalls))
+      .map(new CountBasedSlidingWindowMeasurements[F](_))
+
+  private[circuitbreaker] final case class State(
+      failures: immutable.BitSet,
+      index: Int,
+      windowSize: Int,
+      totalMeasurements: Int,
+      totalFailures: Int,
+      minNumberOfCalls: Int
+  ) {
+
+    def record(isFailure: Boolean): (State, Snapshot) = {
+      val newTotalMeasurements = math.min(totalMeasurements + 1, windowSize)
+      val newIndex             = (index + 1) % windowSize
+      val evictedWasFailure    = failures.contains(newIndex)
+      val adjustedFailures     = if (evictedWasFailure) totalFailures - 1 else totalFailures
+      val newFailures          = if (isFailure) adjustedFailures + 1 else adjustedFailures
+      val newBits              = if (isFailure) failures + newIndex else failures - newIndex
+      (
+        copy(
+          failures = newBits,
+          index = newIndex,
+          totalMeasurements = newTotalMeasurements,
+          totalFailures = newFailures
+        ),
+        Snapshot(newTotalMeasurements, newFailures)
+      )
     }
 
-  override def reset: F[Unit] = {
-    Clock[F].monotonic.map(_.toMillis).flatMap { now =>
-      Sync[F].delay {
-        timeBuckets.foreach(_.reset(createdAt = now))
-        index = 0
-        totalMeasurements = 0
-        totalFailures = 0
-      }
-    }
+    def isInitialized: Boolean = totalMeasurements >= minNumberOfCalls
+
+    def reset: State = State.empty(windowSize, minNumberOfCalls)
   }
 
-  override def isInitialized: F[Boolean] = Sync[F].delay(totalMeasurements >= minNumberOfCalls)
+  private[circuitbreaker] object State {
+
+    def empty(windowSize: Int, minNumberOfCalls: Int): State = State(
+      failures = immutable.BitSet.empty,
+      index = 0,
+      windowSize = windowSize,
+      totalMeasurements = 0,
+      totalFailures = 0,
+      minNumberOfCalls = minNumberOfCalls
+    )
+  }
+}
+
+final class TimeBasedSlidingWindowMeasurements[F[_]: Sync] private (
+    stateRef: Ref[F, TimeBasedSlidingWindowMeasurements.State]
+) extends Measurements[F] {
+
+  override def record(isFailure: Boolean): F[Snapshot] =
+    Clock[F].monotonic.map(_.toNanos).flatMap { now =>
+      stateRef.modify(_.record(isFailure, now))
+    }
+
+  override def reset: F[Unit] =
+    Clock[F].monotonic.map(_.toNanos).flatMap { now =>
+      stateRef.update(_.reset(now))
+    }
+
+  override def isInitialized: F[Boolean] =
+    stateRef.get.map(_.isInitialized)
 }
 
 object TimeBasedSlidingWindowMeasurements {
@@ -158,25 +144,94 @@ object TimeBasedSlidingWindowMeasurements {
       minNumberOfCalls: Int
   ): F[TimeBasedSlidingWindowMeasurements[F]] =
     for {
-      _            <- Sync[F].delay(require(numberOfBuckets > 0, "numberOfBuckets > 0"))
-      _            <- Sync[F].delay(require(bucketSize >= 10.milliseconds, "bucketSize >= 10.milliseconds"))
-      now          <- Clock[F].monotonic
-      measurements <- Sync[F].delay(
-        new TimeBasedSlidingWindowMeasurements[F](
-          createdAt = now.toMillis,
-          numberOfBuckets,
-          bucketLengthInMillis = bucketSize.toMillis,
-          minNumberOfCalls
+      _        <- Sync[F].delay(require(numberOfBuckets > 0, "numberOfBuckets > 0"))
+      _        <- Sync[F].delay(require(bucketSize >= 10.milliseconds, "bucketSize >= 10.milliseconds"))
+      now      <- Clock[F].monotonic
+      stateRef <- Ref[F].of(
+        State.initial(
+          numberOfBuckets = numberOfBuckets,
+          bucketLengthInNanos = bucketSize.toNanos,
+          minNumberOfCalls = minNumberOfCalls,
+          createdAt = now.toNanos
         )
       )
-    } yield measurements
+    } yield new TimeBasedSlidingWindowMeasurements[F](stateRef)
 
-  private final class TimeBucket(var createdAt: Long, var failures: Int, var total: Int) {
+  private[circuitbreaker] final case class TimeBucket(createdAt: Long, failures: Int, total: Int) {
+    def addMeasurement(isFailure: Boolean): TimeBucket =
+      copy(failures = failures + (if (isFailure) 1 else 0), total = total + 1)
+  }
 
-    def reset(createdAt: Long): Unit = {
-      this.createdAt = createdAt
-      failures = 0
-      total = 0
+  private object TimeBucket {
+    def empty(createdAt: Long): TimeBucket = TimeBucket(createdAt, failures = 0, total = 0)
+  }
+
+  private[circuitbreaker] final case class State(
+      buckets: Vector[TimeBucket],
+      index: Int,
+      numberOfBuckets: Int,
+      bucketLengthInNanos: Long,
+      totalMeasurements: Int,
+      totalFailures: Int,
+      minNumberOfCalls: Int
+  ) {
+
+    def record(isFailure: Boolean, now: Long): (State, Snapshot) = {
+      val timeBucketsSinceLastUpdate = (now - buckets(index).createdAt) / bucketLengthInNanos
+
+      var curIndex             = index
+      var curTotalMeasurements = totalMeasurements
+      var curTotalFailures     = totalFailures
+      var curBuckets           = buckets
+
+      if (timeBucketsSinceLastUpdate > 0) {
+        var bucketsToMoveBy = math.min(timeBucketsSinceLastUpdate, numberOfBuckets)
+        do {
+          bucketsToMoveBy -= 1
+          curIndex = (curIndex + 1) % numberOfBuckets
+          val bucket = curBuckets(curIndex)
+          curTotalMeasurements -= bucket.total
+          curTotalFailures -= bucket.failures
+          curBuckets = curBuckets.updated(curIndex, TimeBucket.empty(createdAt = now))
+        } while (bucketsToMoveBy > 0)
+      }
+
+      curBuckets = curBuckets.updated(curIndex, curBuckets(curIndex).addMeasurement(isFailure))
+      curTotalMeasurements += 1
+      if (isFailure) curTotalFailures += 1
+
+      (
+        copy(
+          buckets = curBuckets,
+          index = curIndex,
+          totalMeasurements = curTotalMeasurements,
+          totalFailures = curTotalFailures
+        ),
+        Snapshot(curTotalMeasurements, curTotalFailures)
+      )
     }
+
+    def isInitialized: Boolean = totalMeasurements >= minNumberOfCalls
+
+    def reset(now: Long): State =
+      State.initial(numberOfBuckets, bucketLengthInNanos, minNumberOfCalls, now)
+  }
+
+  private[circuitbreaker] object State {
+
+    def initial(
+        numberOfBuckets: Int,
+        bucketLengthInNanos: Long,
+        minNumberOfCalls: Int,
+        createdAt: Long
+    ): State = State(
+      buckets = Vector.fill(numberOfBuckets)(TimeBucket.empty(createdAt = createdAt)),
+      index = 0,
+      numberOfBuckets = numberOfBuckets,
+      bucketLengthInNanos = bucketLengthInNanos,
+      totalMeasurements = 0,
+      totalFailures = 0,
+      minNumberOfCalls = minNumberOfCalls
+    )
   }
 }

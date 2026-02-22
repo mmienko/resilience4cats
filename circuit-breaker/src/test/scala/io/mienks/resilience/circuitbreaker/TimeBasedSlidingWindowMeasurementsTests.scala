@@ -176,4 +176,31 @@ class TimeBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
       } yield ()
     }
   }
+
+  test("recordings after reset produce correct snapshots") {
+    TestControl.executeEmbed {
+      for {
+        measurements <- TimeBasedSlidingWindowMeasurements[IO](
+          numberOfBuckets = 3,
+          bucketSize = 1.second,
+          minNumberOfCalls = 1
+        )
+        _        <- measurements.record(isFailure = true).replicateA(5)
+        snapshot <- measurements.record(isFailure = true)
+        _ = assertEquals(snapshot, Snapshot(totalMeasurements = 6, totalFailures = 6))
+
+        _ <- measurements.reset
+
+        initialized <- measurements.isInitialized
+        _ = assert(!initialized, "should not be initialized after reset")
+
+        s1 <- measurements.record(isFailure = false)
+        _ = assertEquals(s1, Snapshot(totalMeasurements = 1, totalFailures = 0))
+        s2 <- measurements.record(isFailure = true)
+        _ = assertEquals(s2, Snapshot(totalMeasurements = 2, totalFailures = 1))
+        s3 <- IO.sleep(1.second) >> measurements.record(isFailure = false)
+        _ = assertEquals(s3, Snapshot(totalMeasurements = 3, totalFailures = 1))
+      } yield ()
+    }
+  }
 }
