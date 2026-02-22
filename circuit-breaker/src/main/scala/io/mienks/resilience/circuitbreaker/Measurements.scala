@@ -32,7 +32,18 @@ object Measurements {
   ): F[TimeBasedSlidingWindowMeasurements[F]] =
     TimeBasedSlidingWindowMeasurements(numberOfBuckets, bucketSize, minNumberOfCalls)
 
+  /** A point-in-time view of the sliding window's aggregate counters.
+    *
+    * @param totalMeasurements
+    *   the number of recorded outcomes currently in the window
+    * @param totalFailures
+    *   the number of recorded failures currently in the window
+    */
   final case class Snapshot(totalMeasurements: Int, totalFailures: Int) {
+
+    /** The ratio of failures to total measurements. Callers must ensure `totalMeasurements > 0`; dividing by zero
+      * yields `NaN`.
+      */
     def failureRate: Double = totalFailures.toDouble / totalMeasurements
   }
 
