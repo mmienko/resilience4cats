@@ -198,7 +198,7 @@ object CircuitBreaker {
     *   [[Open]]. For example, `0.5` means 50% failures. Must be strictly greater than zero.
     * @param resetTimeout
     *   is the timeout to wait in the `Open` state before attempting a close of the circuit breaker (but without the
-    *   backoff function applied)
+    *   backoff function applied). Must be less than or equal to maxResetTimeout.
     * @param numberOfHalfOpenCalls
     *   is the number of calls to determine if circuit breaker should move from HalfOpen to Closed
     * @param backoff
@@ -243,7 +243,7 @@ object CircuitBreaker {
     *   [[Open]]. For example, `0.5` means 50% failures. Must be strictly greater than zero.
     * @param resetTimeout
     *   is the timeout to wait in the `Open` state before attempting a close of the circuit breaker (but without the
-    *   backoff function applied)
+    *   backoff function applied). Must be less than or equal to maxResetTimeout.
     * @param numberOfHalfOpenCalls
     *   is the number of calls to determine if circuit breaker should move from HalfOpen to Closed
     * @param backoff
@@ -485,8 +485,9 @@ object CircuitBreaker {
 
     require(failureRateThreshold > 0.0, "failureRateThreshold must be > 0.0")
     require(failureRateThreshold <= 1.0, "failureRateThreshold must be <= 1.0")
-    require(resetTimeout > Duration.Zero, "resetTimeout > 0")
-    require(maxResetTimeout > Duration.Zero, "maxResetTimeout > 0")
+    require(resetTimeout > Duration.Zero, "resetTimeout must be > 0")
+    require(maxResetTimeout > Duration.Zero, "maxResetTimeout must be > 0")
+    require(resetTimeout <= maxResetTimeout, "resetTimeout must be <= maxResetTimeout")
 
     private val NoCallback: F[Unit]    = F.unit
     private lazy val resetMeasurements = halfOpenMeasurements.set(HalfOpenMeasurement()) >> measurements.reset
