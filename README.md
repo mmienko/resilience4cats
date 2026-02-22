@@ -1,6 +1,19 @@
 # Resilience4Cats
 Resilience structures not included in Cats Effect standard library, such as `CircuitBreaker` and `RateLimiter`.
 
+## Installation
+
+Add the following to your `build.sbt`:
+
+```scala
+// All modules
+libraryDependencies += "io.github.mmienko" %% "resilience4cats" % "<version>"
+
+// Or individual modules
+libraryDependencies += "io.github.mmienko" %% "circuit-breaker" % "<version>"
+libraryDependencies += "io.github.mmienko" %% "rate-limiter" % "<version>"
+```
+
 ## Rate-Limiter
 The `rate-limiter` uses the GCRA algorithm, an equivalent to the token-bucket algorithm, to track the rate of requests.
 
