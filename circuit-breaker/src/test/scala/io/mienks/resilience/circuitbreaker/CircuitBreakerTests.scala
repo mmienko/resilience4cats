@@ -4,6 +4,7 @@ import cats.effect._
 import cats.effect.testkit.TestControl
 import cats.syntax.all._
 import CircuitBreaker.{MeasurementStrategy, RejectedExecution}
+import CircuitBreakerTests.UnitTestError
 import munit.CatsEffectSuite
 
 import scala.concurrent.duration._
@@ -636,7 +637,174 @@ class CircuitBreakerTests extends CatsEffectSuite {
     } yield ()
   }
 
-  private final case class UnitTestError() extends Throwable("unit test error")
+  test("should cap resetTimeout at maxResetTimeout") {
+    val resetTimeout = 10.millis
+    TestControl.executeEmbed(
+      for {
+        cb <- CircuitBreaker[IO](
+          measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1),
+          failureRateThreshold = 1.0,
+          resetTimeout = resetTimeout,
+          numberOfHalfOpenCalls = 1,
+          backoff = Backoff.exponential,
+          maxResetTimeout = 30.millis
+        )
+        errorTask = cb.protect(IO.raiseError[Unit](UnitTestError())).attempt
+
+        _ <- errorTask
+        _ <- cb.state.map {
+          case CircuitBreaker.Open(_, _, t) => assertEquals(t, 10.millis)
+          case s                            => fail(s"expected Open, got $s")
+        }
+
+        _ <- IO.sleep(10.millis)
+        _ <- errorTask
+        _ <- cb.state.map {
+          case CircuitBreaker.Open(_, _, t) => assertEquals(t, 20.millis)
+          case s                            => fail(s"expected Open, got $s")
+        }
+
+        // should be capped at 30ms not 40ms from exponential backoff
+        _ <- IO.sleep(20.millis)
+        _ <- errorTask
+        _ <- cb.state.map {
+          case CircuitBreaker.Open(_, _, t) => assertEquals(t, 30.millis)
+          case s                            => fail(s"expected Open, got $s")
+        }
+
+        // should still be capped
+        _ <- IO.sleep(30.millis)
+        _ <- errorTask
+        _ <- cb.state.map {
+          case CircuitBreaker.Open(_, _, t) => assertEquals(t, 30.millis)
+          case s                            => fail(s"expected Open, got $s")
+        }
+      } yield ()
+    )
+  }
+
+  test("should not count filtered exceptions as failures in HalfOpen state") {
+    case class FilteredException() extends Throwable()
+
+    val resetTimeout = 10.millis
+    TestControl.executeEmbed(
+      for {
+        cb <- CircuitBreaker[IO](
+          measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1),
+          failureRateThreshold = 1.0,
+          resetTimeout = resetTimeout,
+          numberOfHalfOpenCalls = 1,
+          maxResetTimeout = resetTimeout,
+          exceptionFilter = !_.isInstanceOf[FilteredException]
+        )
+
+        _ <- cb.protect(IO.raiseError[Unit](UnitTestError())).attempt
+        _ <- cb.state.map {
+          case _: CircuitBreaker.Open =>
+          case s                      => fail(s"expected Open, got $s")
+        }
+
+        _ <- IO.sleep(resetTimeout)
+        _ <- cb.protect(IO.raiseError[Unit](FilteredException())).attempt
+
+        _ <- cb.state.assertEquals(CircuitBreaker.Closed)
+      } yield ()
+    )
+  }
+
+  test("should not count isError results as failures in HalfOpen when isError returns false") {
+    val resetTimeout = 10.millis
+    TestControl.executeEmbed(
+      for {
+        cb <- CircuitBreaker[IO](
+          measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1),
+          failureRateThreshold = 1.0,
+          resetTimeout = resetTimeout,
+          numberOfHalfOpenCalls = 1,
+          maxResetTimeout = resetTimeout
+        )
+
+        _ <- cb.protect(IO.raiseError[Unit](UnitTestError())).attempt
+        _ <- IO.sleep(resetTimeout)
+
+        result <- cb.protectIf((_: Int) => false)(IO.pure(100))
+        _ = assertEquals(result, 100)
+        _ <- cb.state.assertEquals(CircuitBreaker.Closed)
+      } yield ()
+    )
+  }
+
+  test("should count isError results as failures in HalfOpen and re-open") {
+    val resetTimeout = 10.millis
+    TestControl.executeEmbed(
+      for {
+        cb <- CircuitBreaker[IO](
+          measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1),
+          failureRateThreshold = 1.0,
+          resetTimeout = resetTimeout,
+          numberOfHalfOpenCalls = 1,
+          maxResetTimeout = resetTimeout
+        )
+
+        _ <- cb.protect(IO.raiseError[Unit](UnitTestError())).attempt
+        _ <- IO.sleep(resetTimeout)
+
+        _ <- cb.protectIf((_: Int) => true)(IO.pure(100))
+        _ <- cb.state.map {
+          case _: CircuitBreaker.Open =>
+          case s                      => fail(s"expected Open after isError in HalfOpen, got $s")
+        }
+      } yield ()
+    )
+  }
+
+  test("concurrent success calls should not corrupt circuit breaker Closed state") {
+    for {
+      cb <- CircuitBreaker[IO](
+        measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 100),
+        failureRateThreshold = 1.0,
+        resetTimeout = 1.minute,
+        maxResetTimeout = 1.minute
+      )
+      _ <- List.fill(100)(cb.protect(IO.unit)).parSequence_
+      _ <- cb.state.assertEquals(CircuitBreaker.Closed)
+    } yield ()
+  }
+
+  test("concurrent failures should open circuit breaker") {
+    for {
+      cb <- CircuitBreaker[IO](
+        measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 50),
+        failureRateThreshold = 1.0,
+        resetTimeout = 1.minute,
+        maxResetTimeout = 1.minute
+      )
+      _ <- List.fill(50)(cb.protect(IO.raiseError[Unit](UnitTestError())).attempt).parSequence_
+      _ <- cb.state.map {
+        case _: CircuitBreaker.Open =>
+        case s                      => fail(s"expected Open after concurrent failures, got $s")
+      }
+    } yield ()
+  }
+
+  test("concurrent mix of successes and failures should produce consistent state") {
+    for {
+      cb <- CircuitBreaker[IO](
+        measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 200),
+        failureRateThreshold = 0.5,
+        resetTimeout = 1.minute,
+        maxResetTimeout = 1.minute
+      )
+      successes = List.fill(200)(cb.protect(IO.unit).attempt.void)
+      failures  = List.fill(200)(cb.protect(IO.raiseError[Unit](UnitTestError())).attempt.void)
+      _     <- (successes ++ failures).parSequence_
+      state <- cb.state
+      _ = state match {
+        case _: CircuitBreaker.Open =>
+        case s                      => fail(s"expected Open, got $s")
+      }
+    } yield ()
+  }
 
   private final class DeferredTask(
       started: Deferred[IO, Unit],
@@ -669,4 +837,8 @@ class CircuitBreakerTests extends CatsEffectSuite {
     }
 
   }
+}
+
+object CircuitBreakerTests {
+  private final case class UnitTestError() extends Throwable("unit test error")
 }

@@ -116,4 +116,43 @@ class CountBasedSlidingWindowMeasurementsTests extends CatsEffectSuite {
       _ = assert(!initialized, "Measurements should NOT be initialized after reset")
     } yield ()
   }
+
+  test("recordings after reset produce correct snapshots") {
+    for {
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 3, minNumberOfCalls = 1)
+      _            <- measurements.record(isFailure = true).replicateA(3)
+      snapshot     <- measurements.record(isFailure = true)
+      _ = assertEquals(snapshot, Snapshot(totalMeasurements = 3, totalFailures = 3))
+
+      _ <- measurements.reset
+
+      initialized <- measurements.isInitialized
+      _ = assert(!initialized, "should not be initialized after reset")
+
+      s1 <- measurements.record(isFailure = false)
+      _ = assertEquals(s1, Snapshot(totalMeasurements = 1, totalFailures = 0))
+      s2 <- measurements.record(isFailure = true)
+      _ = assertEquals(s2, Snapshot(totalMeasurements = 2, totalFailures = 1))
+      s3 <- measurements.record(isFailure = false)
+      _ = assertEquals(s3, Snapshot(totalMeasurements = 3, totalFailures = 1))
+      s4 <- measurements.record(isFailure = true)
+      _ = assertEquals(s4, Snapshot(totalMeasurements = 3, totalFailures = 2))
+    } yield ()
+  }
+
+  test("CountBasedSlidingWindowMeasurements with windowSize = 1") {
+    for {
+      measurements <- CountBasedSlidingWindowMeasurements[IO](windowSize = 1, minNumberOfCalls = 1)
+      s1           <- measurements.record(isFailure = false)
+      _ = assertEquals(s1, Snapshot(totalMeasurements = 1, totalFailures = 0))
+      s2 <- measurements.record(isFailure = true)
+      _ = assertEquals(s2, Snapshot(totalMeasurements = 1, totalFailures = 1))
+      s3 <- measurements.record(isFailure = false)
+      _ = assertEquals(s3, Snapshot(totalMeasurements = 1, totalFailures = 0))
+      s4 <- measurements.record(isFailure = true)
+      _ = assertEquals(s4, Snapshot(totalMeasurements = 1, totalFailures = 1))
+      s5 <- measurements.record(isFailure = true)
+      _ = assertEquals(s5, Snapshot(totalMeasurements = 1, totalFailures = 1))
+    } yield ()
+  }
 }
