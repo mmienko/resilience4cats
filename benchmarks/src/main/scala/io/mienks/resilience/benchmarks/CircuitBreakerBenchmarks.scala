@@ -10,13 +10,21 @@ import org.openjdk.jmh.infra.Blackhole
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration._
 
-/*
-Scope.Benchmark configures variables to be shared across all threads.
+/**
+ * Benchmarks measuring CircuitBreaker throughput under multi-threaded contention.
+ *
+ * Scope.Benchmark configures variables to be shared across all threads, simulating
+ * a typical production scenario where multiple fibers share a single CircuitBreaker.
+ *
+ * These benchmarks focus on:
+ * - Throughput in each specific state (Closed, Open, HalfOpen rejection)
+ * - State transition overhead when rapidly cycling through all states
  */
 @State(Scope.Benchmark)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @BenchmarkMode(Array(Mode.Throughput)) // ops/ms
 @Threads(value = 6)
+@Warmup(iterations = 3)
 @Measurement(iterations = 3)
 @Fork(value = 1)
 class CircuitBreakerBenchmarks {
@@ -59,6 +67,8 @@ class CircuitBreakerBenchmarks {
     ).flatTap(openCircuitBreaker)
       .unsafeRunSync()
 
+    // Setup a HalfOpen CB with its single slot occupied by IO.never, so all calls are rejected.
+    // This measures rejection performance in HalfOpen state.
     circuitBreakerHalfOpen = CircuitBreaker[IO](
       resetTimeout = TransitionAsapToHalfOpen,
       measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1)
@@ -67,6 +77,8 @@ class CircuitBreakerBenchmarks {
       .flatTap(_.protect(IO.never[Unit]).start)
       .unsafeRunSync()
 
+    // Setup a CB that rapidly cycles through all states during the benchmark.
+    // Used to measure state transition overhead under contention.
     circuitBreakerAll = CircuitBreaker[IO](
       resetTimeout = TransitionAsapToHalfOpen,
       measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 10)
@@ -96,7 +108,7 @@ class CircuitBreakerBenchmarks {
 
   @Benchmark
   @OperationsPerInvocation(10_000)
-  def callProtectOnHalfOpenCircuitBreaker(): Unit =
+  def callProtectOnHalfOpenCircuitBreakerRejection(): Unit =
     callProtect(circuitBreakerHalfOpen)
 
   @Benchmark
