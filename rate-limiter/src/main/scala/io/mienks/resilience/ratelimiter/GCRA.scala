@@ -125,24 +125,23 @@ object GCRA {
       capacity: Int,
       initialCapacity: Int,
       rate: RefillRate
-  ): F[GCRA[F]] =
+  ): F[GCRA[F]] = apply(
+    RateLimiter.Config(
+      capacity = capacity,
+      initialCapacity = initialCapacity,
+      refillRate = rate
+    )
+  )
+
+  def apply[F[_]: Sync](config: RateLimiter.Config): F[GCRA[F]] =
     for {
-      _ <- Sync[F].raiseWhen(capacity < 1)(new IllegalArgumentException(s"capacity must be positive, got: $capacity"))
-      _ <- Sync[F].raiseWhen(initialCapacity < 0)(
-        new IllegalArgumentException(s"initialCapacity must be non-negative, got: $initialCapacity")
-      )
-      _ <- Sync[F].raiseWhen(rate.requests <= 0)(
-        new IllegalArgumentException(s"rate.requests must be positive, got: ${rate.requests}")
-      )
-      now  <- Clock[F].monotonic
-      gcra <- Sync[F].delay {
-        val emissionIntervalNanos = rate.period.toNanos / rate.requests
-        requireNoOverflow(emissionIntervalNanos, capacity.toLong, "emissionInterval * capacity")
-        requireNoOverflow(emissionIntervalNanos, initialCapacity.toLong, "emissionInterval * initialCapacity")
+      emissionIntervalNanos <- config.validate.liftTo[F]
+      now                   <- Clock[F].monotonic
+      gcra                  <- Sync[F].delay {
         new GCRA[F](
-          requestCapacity = capacity,
+          requestCapacity = config.capacity,
           emissionPeriodNanos = emissionIntervalNanos,
-          nextRequestTime = new AtomicLong(now.toNanos - initialCapacity * emissionIntervalNanos)
+          nextRequestTime = new AtomicLong(now.toNanos - config.initialCapacity * emissionIntervalNanos)
         )
       }
     } yield gcra
@@ -155,10 +154,5 @@ object GCRA {
 
   private def clamp(value: Long, min: Long, max: Long): Long =
     Math.max(min, Math.min(max, value))
-
-  /** @throws ArithmeticException if a * b overflows Long */
-  private def requireNoOverflow(a: Long, b: Long, label: String): Unit =
-    if (Math.multiplyHigh(a, b) != 0)
-      throw new ArithmeticException(s"Long overflow: $label ($a * $b)")
 
 }
