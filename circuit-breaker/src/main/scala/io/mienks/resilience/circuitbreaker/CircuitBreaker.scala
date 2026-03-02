@@ -7,6 +7,7 @@ import cats.{Applicative, Eq, Monad, Show}
 
 import java.time.{Instant, ZoneOffset}
 import scala.concurrent.duration._
+import scala.util.control.NoStackTrace
 
 /** The `CircuitBreaker` models a concurrent state machine used to provide stability and prevent cascading failures in
   * distributed systems.
@@ -445,7 +446,9 @@ object CircuitBreaker {
 
   /** Exception thrown whenever an execution attempt was rejected.
     */
-  final case class RejectedExecution(reason: Reason) extends RuntimeException(s"Execution rejected: ${reason.show}")
+  final class RejectedExecution(reason: Reason)
+      extends Throwable(s"Execution rejected: ${reason.show}")
+      with NoStackTrace /* Eliminates a very large performance penality */
 
   sealed trait Reason
 
@@ -742,7 +745,7 @@ object CircuitBreaker {
         }
 
     private def reject[A](reason: Reason, poll: Poll[F]): F[A] =
-      onRejected.voidError >> poll(F.raiseError[A](RejectedExecution(reason)))
+      onRejected.voidError >> poll(F.raiseError[A](new RejectedExecution(reason)))
 
     private def realTimeInMillis: F[Timestamp] =
       Clock[F].realTime.map(_.toMillis)

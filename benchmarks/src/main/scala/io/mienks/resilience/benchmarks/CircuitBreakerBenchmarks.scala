@@ -2,24 +2,22 @@ package io.mienks.resilience.benchmarks
 
 import cats.effect.IO
 import cats.effect.unsafe.IORuntime
-import io.mienks.resilience.circuitbreaker.CircuitBreaker.MeasurementStrategy
 import io.mienks.resilience.circuitbreaker.CircuitBreaker
+import io.mienks.resilience.circuitbreaker.CircuitBreaker.MeasurementStrategy
 import org.openjdk.jmh.annotations._
-import org.openjdk.jmh.infra.Blackhole
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration._
 
-/**
- * Benchmarks measuring CircuitBreaker throughput under multi-threaded contention.
- *
- * Scope.Benchmark configures variables to be shared across all threads, simulating
- * a typical production scenario where multiple fibers share a single CircuitBreaker.
- *
- * These benchmarks focus on:
- * - Throughput in each specific state (Closed, Open, HalfOpen rejection)
- * - State transition overhead when rapidly cycling through all states
- */
+/** Benchmarks measuring CircuitBreaker throughput under multi-threaded contention.
+  *
+  * Scope.Benchmark configures variables to be shared across all threads, simulating a typical production scenario where
+  * multiple fibers share a single CircuitBreaker.
+  *
+  * These benchmarks focus on:
+  *   - Throughput in each specific state (Closed, Open, HalfOpen rejection)
+  *   - State transition overhead when rapidly cycling through all states
+  */
 @State(Scope.Benchmark)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @BenchmarkMode(Array(Mode.Throughput)) // ops/ms
@@ -89,12 +87,12 @@ class CircuitBreakerBenchmarks {
   Uncomment the below tests to measure the overheads of JMH benchmark test framework and calling IO runtime.
    */
 //  @Benchmark
-//  def baseline(): Unit = Blackhole.consumeCPU(1)
+//  def baseline(): Unit = Blackhole.BlackholeIO.consumeCPU(1)
 //
 //  @Benchmark
 //  @OperationsPerInvocation(10_000)
 //  def baselineIORuntime(): Unit =
-//    consumeCPU(1).replicateA_(OperationsPerJmhInvocation).unsafeRunSync()
+//    BlackholeIO.consumeCPU(1).replicateA_(OperationsPerJmhInvocation).unsafeRunSync()
 
   @Benchmark
   @OperationsPerInvocation(10_000)
@@ -119,9 +117,9 @@ class CircuitBreakerBenchmarks {
         case CircuitBreaker.Closed =>
           ErrorTask
         case _: CircuitBreaker.Open =>
-          consumeCPU(1)
+          BlackholeIO.consumeCPU(1)
         case _: CircuitBreaker.HalfOpen =>
-          consumeCPU(1)
+          BlackholeIO.consumeCPU(1)
       }
       .flatMap(circuitBreakerAll.protect)
       .attempt
@@ -130,11 +128,9 @@ class CircuitBreakerBenchmarks {
       .unsafeRunSync()
 
   private def callProtect(cb: CircuitBreaker[IO]): Unit =
-    cb.protect(consumeCPU(1))
+    cb.protect(BlackholeIO.consumeCPU(1))
       .attempt
       .replicateA_(OperationsPerJmhInvocation)
       .unsafeRunSync()
 
-  private def consumeCPU(cpuToConsume: Int) =
-    IO(Blackhole.consumeCPU(cpuToConsume))
 }

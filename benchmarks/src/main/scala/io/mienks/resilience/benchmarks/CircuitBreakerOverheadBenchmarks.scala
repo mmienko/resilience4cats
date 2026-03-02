@@ -1,21 +1,19 @@
 package io.mienks.resilience.benchmarks
 
 import cats.effect.IO
-import cats.effect.unsafe.IORuntime
+import cats.effect.unsafe.implicits.global
 import io.mienks.resilience.circuitbreaker.CircuitBreaker
 import io.mienks.resilience.circuitbreaker.CircuitBreaker.MeasurementStrategy
 import org.openjdk.jmh.annotations._
-import org.openjdk.jmh.infra.Blackhole
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration._
 
-/**
- * Benchmarks measuring the overhead of CircuitBreaker compared to raw IO execution.
- *
- * These benchmarks use Scope.Thread to measure uncontended performance (no synchronization overhead),
- * isolating the pure cost of the CircuitBreaker wrapper itself.
- */
+/** Benchmarks measuring the overhead of CircuitBreaker compared to raw IO execution.
+  *
+  * These benchmarks use Scope.Thread to measure uncontended performance (no synchronization overhead), isolating the
+  * pure cost of the CircuitBreaker wrapper itself.
+  */
 @State(Scope.Thread)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -24,11 +22,9 @@ import scala.concurrent.duration._
 @Fork(value = 1, jvmArgs = Array("-Xms1G", "-Xmx1G"))
 class CircuitBreakerOverheadBenchmarks {
 
-  private implicit val catsEffectRuntime: IORuntime = cats.effect.unsafe.implicits.global
-
-  private var closedCircuitBreaker: CircuitBreaker[IO]      = _
-  private var noopCircuitBreaker: CircuitBreaker[IO]        = _
-  private var closedWithCallbacksCB: CircuitBreaker[IO]     = _
+  private var closedCircuitBreaker: CircuitBreaker[IO]          = _
+  private var noopCircuitBreaker: CircuitBreaker[IO]            = _
+  private var closedWithCallbacksCB: CircuitBreaker[IO]         = _
   private var timeBasedClosedCircuitBreaker: CircuitBreaker[IO] = _
 
   @Setup(Level.Trial)
@@ -58,33 +54,29 @@ class CircuitBreakerOverheadBenchmarks {
 
   @Benchmark
   def baseline_rawIO(): Unit =
-    consumeCPU(1).unsafeRunSync()
+    BlackholeIO.consumeCPU(1).unsafeRunSync()
 
   @Benchmark
   def baseline_noopCircuitBreaker(): Unit =
-    noopCircuitBreaker.protect(consumeCPU(1)).unsafeRunSync()
+    noopCircuitBreaker.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
   @Benchmark
   def overhead_countBasedClosed(): Unit =
-    closedCircuitBreaker.protect(consumeCPU(1)).unsafeRunSync()
+    closedCircuitBreaker.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
   @Benchmark
   def overhead_countBasedClosedWithCallbacks(): Unit =
-    closedWithCallbacksCB.protect(consumeCPU(1)).unsafeRunSync()
+    closedWithCallbacksCB.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
   @Benchmark
   def overhead_timeBasedClosed(): Unit =
-    timeBasedClosedCircuitBreaker.protect(consumeCPU(1)).unsafeRunSync()
+    timeBasedClosedCircuitBreaker.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
-  private def consumeCPU(tokens: Int): IO[Unit] =
-    IO(Blackhole.consumeCPU(tokens))
 }
 
-/**
- * Benchmarks measuring CircuitBreaker performance under contention with varying thread counts.
- *
- * Uses @Param to test different concurrency levels, helping identify synchronization bottlenecks.
- */
+/** Benchmarks measuring CircuitBreaker throughput under contention by multiple threads. Compare contention_1Thread vs
+  * contention_8Threads to see how throughput scales with thread count.
+  */
 @State(Scope.Benchmark)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @BenchmarkMode(Array(Mode.Throughput))
@@ -92,11 +84,6 @@ class CircuitBreakerOverheadBenchmarks {
 @Measurement(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
 @Fork(value = 1, jvmArgs = Array("-Xms1G", "-Xmx1G"))
 class CircuitBreakerContentionBenchmarks {
-
-  @Param(Array("1", "2", "4", "8"))
-  var threads: Int = _
-
-  private implicit val catsEffectRuntime: IORuntime = cats.effect.unsafe.implicits.global
 
   private var circuitBreaker: CircuitBreaker[IO] = _
 
@@ -107,20 +94,31 @@ class CircuitBreakerContentionBenchmarks {
     ).unsafeRunSync()
   }
 
-  @Benchmark
-  @Threads(Threads.MAX)
-  def contention_closedState(): Unit =
-    circuitBreaker.protect(consumeCPU(1)).unsafeRunSync()
+  private def runProtect(): Unit =
+    circuitBreaker.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
-  private def consumeCPU(tokens: Int): IO[Unit] =
-    IO(Blackhole.consumeCPU(tokens))
+  @Benchmark
+  @Threads(1)
+  def contention_1Thread(): Unit = runProtect()
+
+  @Benchmark
+  @Threads(2)
+  def contention_2Threads(): Unit = runProtect()
+
+  @Benchmark
+  @Threads(4)
+  def contention_4Threads(): Unit = runProtect()
+
+  @Benchmark
+  @Threads(8)
+  def contention_8Threads(): Unit = runProtect()
+
 }
 
-/**
- * Benchmarks measuring CircuitBreaker performance with different window sizes.
- *
- * Window size affects memory usage and potentially the cost of recording measurements.
- */
+/** Benchmarks measuring CircuitBreaker performance with different window sizes.
+  *
+  * Window size affects memory usage and potentially the cost of recording measurements.
+  */
 @State(Scope.Thread)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -131,8 +129,6 @@ class CircuitBreakerWindowSizeBenchmarks {
 
   @Param(Array("10", "100", "1000"))
   var windowSize: Int = _
-
-  private implicit val catsEffectRuntime: IORuntime = cats.effect.unsafe.implicits.global
 
   private var circuitBreaker: CircuitBreaker[IO] = _
 
@@ -145,21 +141,18 @@ class CircuitBreakerWindowSizeBenchmarks {
 
   @Benchmark
   def windowSize_countBased(): Unit =
-    circuitBreaker.protect(consumeCPU(1)).unsafeRunSync()
+    circuitBreaker.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
-  private def consumeCPU(tokens: Int): IO[Unit] =
-    IO(Blackhole.consumeCPU(tokens))
 }
 
-/**
- * Benchmarks measuring CircuitBreaker performance with different time-based window configurations.
- *
- * Time-based windows bucket measurements by time, so performance depends on:
- * - Number of buckets (length / precision)
- * - Bucket lookup and aggregation cost
- *
- * This benchmark varies window length and precision to measure their impact.
- */
+/** Benchmarks measuring CircuitBreaker performance with different time-based window configurations.
+  *
+  * Time-based windows bucket measurements by time, so performance depends on:
+  *   - Number of buckets (length / precision)
+  *   - Bucket lookup and aggregation cost
+  *
+  * This benchmark varies window length and precision to measure their impact.
+  */
 @State(Scope.Thread)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -173,8 +166,6 @@ class CircuitBreakerTimeBasedWindowBenchmarks {
 
   @Param(Array("100", "500", "1000"))
   var precisionMillis: Int = _
-
-  private implicit val catsEffectRuntime: IORuntime = cats.effect.unsafe.implicits.global
 
   private var circuitBreaker: CircuitBreaker[IO] = _
 
@@ -191,18 +182,15 @@ class CircuitBreakerTimeBasedWindowBenchmarks {
 
   @Benchmark
   def windowSize_timeBased(): Unit =
-    circuitBreaker.protect(consumeCPU(1)).unsafeRunSync()
+    circuitBreaker.protect(BlackholeIO.consumeCPU(1)).unsafeRunSync()
 
-  private def consumeCPU(tokens: Int): IO[Unit] =
-    IO(Blackhole.consumeCPU(tokens))
 }
 
-/**
- * Benchmarks measuring HalfOpen state execution (not rejection).
- *
- * This benchmark properly sets up HalfOpen state with enough slots for actual execution,
- * resetting state each iteration to ensure consistent measurements.
- */
+/** Benchmarks measuring HalfOpen state execution (not rejection).
+  *
+  * This benchmark properly sets up HalfOpen state with enough slots for actual execution, resetting state each
+  * iteration to ensure consistent measurements.
+  */
 @State(Scope.Thread)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -211,11 +199,9 @@ class CircuitBreakerTimeBasedWindowBenchmarks {
 @Fork(value = 1)
 class CircuitBreakerHalfOpenExecutionBenchmarks {
 
-  private implicit val catsEffectRuntime: IORuntime = cats.effect.unsafe.implicits.global
-
-  private val ErrorTask                  = IO.raiseError[Unit](new Throwable("trip"))
-  private val TransitionAsapToHalfOpen   = 1.microsecond
-  private val HighNumberOfHalfOpenCalls  = 10_000
+  private val ErrorTask                 = IO.raiseError[Unit](new Throwable("trip"))
+  private val TransitionAsapToHalfOpen  = 1.microsecond
+  private val HighNumberOfHalfOpenCalls = 10_000
 
   private var circuitBreaker: CircuitBreaker[IO] = _
 
@@ -233,17 +219,14 @@ class CircuitBreakerHalfOpenExecutionBenchmarks {
   @Benchmark
   @OperationsPerInvocation(1000)
   def halfOpen_actualExecution(): Unit = {
-    val task = circuitBreaker.protect(consumeCPU(1)).attempt.void
+    val task = circuitBreaker.protect(BlackholeIO.consumeCPU(1)).attempt.void
     task.replicateA_(1000).unsafeRunSync()
   }
 
-  private def consumeCPU(tokens: Int): IO[Unit] =
-    IO(Blackhole.consumeCPU(tokens))
 }
 
-/**
- * Benchmarks comparing state read performance (useful for monitoring/metrics use cases).
- */
+/** Benchmarks comparing state read performance (useful for monitoring/metrics use cases).
+  */
 @State(Scope.Thread)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -251,8 +234,6 @@ class CircuitBreakerHalfOpenExecutionBenchmarks {
 @Measurement(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
 @Fork(value = 1)
 class CircuitBreakerStateReadBenchmarks {
-
-  private implicit val catsEffectRuntime: IORuntime = cats.effect.unsafe.implicits.global
 
   private var closedCB: CircuitBreaker[IO] = _
   private var openCB: CircuitBreaker[IO]   = _
