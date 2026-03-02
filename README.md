@@ -1,4 +1,8 @@
 # Resilience4Cats
+
+[![Latest Release](https://img.shields.io/github/v/release/mmienko/resilience4cats?sort=semver)](https://github.com/mmienko/resilience4cats/releases)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.mmienko/resilience4cats_2.13)](https://central.sonatype.com/artifact/io.github.mmienko/resilience4cats_2.13)
+
 Resilience structures not included in Cats Effect standard library, such as `CircuitBreaker` and `RateLimiter`.
 
 ## Installation
