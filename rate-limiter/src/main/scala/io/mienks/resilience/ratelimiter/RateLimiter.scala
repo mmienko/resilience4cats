@@ -44,6 +44,8 @@ object RateLimiter {
       rate: RefillRate
   ): F[RateLimiter[F]] = GCRA(capacity, initialCapacity, rate).widen
 
+  def apply[F[_]: Sync](config: Config): F[RateLimiter[F]] = GCRA(config).widen
+
   def empty[F[_]: Sync](capacity: Int, rate: RefillRate): F[RateLimiter[F]] =
     apply(capacity, initialCapacity = 0, rate)
 
