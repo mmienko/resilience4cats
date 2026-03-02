@@ -13,10 +13,23 @@ ThisBuild / developers   := List(
 ThisBuild / description := "Resilience structures not included in Cats Effect standard library, such as `CircuitBreaker` and `RateLimiter`."
 
 lazy val root = (project in file("."))
-  .aggregate(circuitBreaker, benchmarks, rateLimiter)
+  .aggregate(circuitBreaker, benchmarks, rateLimiter, resilience4cats)
   .settings(
-    name := "resilience4cats"
+    name := "resilience4cats-root",
+    publishArtifact := false,
+    publish / skip  := true
   )
+
+// This module aggregates sub-modules into an "all" module
+lazy val resilience4cats = project
+  .in(file("resilience4cats"))
+  .settings(
+    name                                   := "resilience4cats",
+    Compile / packageSrc / publishArtifact := false,
+    Compile / packageDoc / publishArtifact := false
+  )
+  .dependsOn(circuitBreaker, rateLimiter)
+  .aggregate(circuitBreaker, rateLimiter)
 
 val CatsEffectVersion      = "3.6.3"
 val MunitCatsEffectVersion = "2.1.0"
