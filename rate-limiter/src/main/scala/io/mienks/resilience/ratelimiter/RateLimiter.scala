@@ -1,6 +1,6 @@
 package io.mienks.resilience.ratelimiter
 
-import cats.effect.{Async, Sync}
+import cats.effect.Sync
 
 import scala.concurrent.duration.{Duration, FiniteDuration}
 import cats.syntax.all._
@@ -49,9 +49,6 @@ object RateLimiter {
 
   def full[F[_]: Sync](capacity: Int, rate: RefillRate): F[RateLimiter[F]] =
     apply(capacity, initialCapacity = capacity, rate)
-
-  def tokenBucket[F[_]: Async](capacity: Int, initial: Int, refillRate: RefillRate): F[TokenBucket[F]] =
-    TokenBucket(capacity, initial, refillRate)
 
   def gcra[F[_]: Sync](capacity: Int, initial: Int, refillRate: RefillRate): F[GCRA[F]] =
     GCRA(capacity, initial, refillRate)
