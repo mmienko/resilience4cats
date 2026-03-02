@@ -2,21 +2,27 @@ package io.mienks.resilience.benchmarks
 
 import cats.effect.IO
 import cats.effect.unsafe.IORuntime
-import io.mienks.resilience.circuitbreaker.CircuitBreaker.MeasurementStrategy
 import io.mienks.resilience.circuitbreaker.CircuitBreaker
+import io.mienks.resilience.circuitbreaker.CircuitBreaker.MeasurementStrategy
 import org.openjdk.jmh.annotations._
-import org.openjdk.jmh.infra.Blackhole
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration._
 
-/*
-Scope.Benchmark configures variables to be shared across all threads.
- */
+/** Benchmarks measuring CircuitBreaker throughput under multi-threaded contention.
+  *
+  * Scope.Benchmark configures variables to be shared across all threads, simulating a typical production scenario where
+  * multiple fibers share a single CircuitBreaker.
+  *
+  * These benchmarks focus on:
+  *   - Throughput in each specific state (Closed, Open, HalfOpen rejection)
+  *   - State transition overhead when rapidly cycling through all states
+  */
 @State(Scope.Benchmark)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @BenchmarkMode(Array(Mode.Throughput)) // ops/ms
 @Threads(value = 6)
+@Warmup(iterations = 3)
 @Measurement(iterations = 3)
 @Fork(value = 1)
 class CircuitBreakerBenchmarks {
@@ -59,6 +65,8 @@ class CircuitBreakerBenchmarks {
     ).flatTap(openCircuitBreaker)
       .unsafeRunSync()
 
+    // Setup a HalfOpen CB with its single slot occupied by IO.never, so all calls are rejected.
+    // This measures rejection performance in HalfOpen state.
     circuitBreakerHalfOpen = CircuitBreaker[IO](
       resetTimeout = TransitionAsapToHalfOpen,
       measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 1)
@@ -67,6 +75,8 @@ class CircuitBreakerBenchmarks {
       .flatTap(_.protect(IO.never[Unit]).start)
       .unsafeRunSync()
 
+    // Setup a CB that rapidly cycles through all states during the benchmark.
+    // Used to measure state transition overhead under contention.
     circuitBreakerAll = CircuitBreaker[IO](
       resetTimeout = TransitionAsapToHalfOpen,
       measurementStrategy = MeasurementStrategy.CountBasedSlidingWindow(numberOfMeasurements = 10)
@@ -77,12 +87,12 @@ class CircuitBreakerBenchmarks {
   Uncomment the below tests to measure the overheads of JMH benchmark test framework and calling IO runtime.
    */
 //  @Benchmark
-//  def baseline(): Unit = Blackhole.consumeCPU(1)
+//  def baseline(): Unit = Blackhole.BlackholeIO.consumeCPU(1)
 //
 //  @Benchmark
 //  @OperationsPerInvocation(10_000)
 //  def baselineIORuntime(): Unit =
-//    consumeCPU(1).replicateA_(OperationsPerJmhInvocation).unsafeRunSync()
+//    BlackholeIO.consumeCPU(1).replicateA_(OperationsPerJmhInvocation).unsafeRunSync()
 
   @Benchmark
   @OperationsPerInvocation(10_000)
@@ -96,7 +106,7 @@ class CircuitBreakerBenchmarks {
 
   @Benchmark
   @OperationsPerInvocation(10_000)
-  def callProtectOnHalfOpenCircuitBreaker(): Unit =
+  def callProtectOnHalfOpenCircuitBreakerRejection(): Unit =
     callProtect(circuitBreakerHalfOpen)
 
   @Benchmark
@@ -107,9 +117,9 @@ class CircuitBreakerBenchmarks {
         case CircuitBreaker.Closed =>
           ErrorTask
         case _: CircuitBreaker.Open =>
-          consumeCPU(1)
+          BlackholeIO.consumeCPU(1)
         case _: CircuitBreaker.HalfOpen =>
-          consumeCPU(1)
+          BlackholeIO.consumeCPU(1)
       }
       .flatMap(circuitBreakerAll.protect)
       .attempt
@@ -118,11 +128,9 @@ class CircuitBreakerBenchmarks {
       .unsafeRunSync()
 
   private def callProtect(cb: CircuitBreaker[IO]): Unit =
-    cb.protect(consumeCPU(1))
+    cb.protect(BlackholeIO.consumeCPU(1))
       .attempt
       .replicateA_(OperationsPerJmhInvocation)
       .unsafeRunSync()
 
-  private def consumeCPU(cpuToConsume: Int) =
-    IO(Blackhole.consumeCPU(cpuToConsume))
 }
