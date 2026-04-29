@@ -55,13 +55,42 @@ object RateLimiter {
   def gcra[F[_]: Sync](capacity: Int, initial: Int, refillRate: RefillRate): F[GCRA[F]] =
     GCRA(capacity, initial, refillRate)
 
+  object Dynamic {
+
+    def apply[F[_]: Sync](config: Config): F[DynamicGCRA[F]] = DynamicGCRA(config)
+
+    def apply[F[_]: Sync](capacity: Int, initialCapacity: Int, refillRate: RefillRate): F[DynamicGCRA[F]] =
+      DynamicGCRA(capacity, initialCapacity, refillRate)
+
+    def empty[F[_]: Sync](capacity: Int, refillRate: RefillRate): F[DynamicGCRA[F]] =
+      DynamicGCRA.empty(capacity, refillRate)
+
+    def full[F[_]: Sync](capacity: Int, refillRate: RefillRate): F[DynamicGCRA[F]] =
+      DynamicGCRA.full(capacity, refillRate)
+
+    def gcra[F[_]: Sync](capacity: Int, initial: Int, refillRate: RefillRate): F[DynamicGCRA[F]] =
+      DynamicGCRA(capacity, initial, refillRate)
+  }
+
   /** Rate of requests / period
     * @param requests
     *   number of requests (numerator)
     * @param period
     *   unit of time (denominator)
     */
-  final case class RefillRate(requests: Int, period: FiniteDuration)
+  final case class RefillRate(requests: Int, period: FiniteDuration) {
+    def emissionIntervalNanos: Long = period.toNanos / requests
+
+    def validate: Either[Throwable, Long] =
+      for {
+        _ <- Either.cond(
+          requests > 0,
+          (),
+          new IllegalArgumentException(s"refillRate.requests must be positive, got: ${requests.toString}")
+            with NoStackTrace
+        )
+      } yield emissionIntervalNanos
+  }
 
   object RefillRate {
     def parse(rate: String): Option[RefillRate] = {
@@ -94,13 +123,7 @@ object RateLimiter {
           (),
           new IllegalArgumentException(s"initialCapacity must be non-negative, got: $initialCapacity") with NoStackTrace
         )
-        _ <- Either.cond(
-          refillRate.requests > 0,
-          (),
-          new IllegalArgumentException(s"refillRate.requests must be positive, got: ${refillRate.requests}")
-            with NoStackTrace
-        )
-        emissionIntervalNanos = refillRate.period.toNanos / refillRate.requests
+        emissionIntervalNanos <- refillRate.validate
         _ <- Config.requireNoOverflow(emissionIntervalNanos, capacity.toLong, "emissionInterval * capacity")
         _ <- Config.requireNoOverflow(
           emissionIntervalNanos,
@@ -120,7 +143,7 @@ object RateLimiter {
     def empty(capacity: Int, refillRate: RefillRate): Config =
       new Config(capacity, initialCapacity = 0, refillRate)
 
-    private def requireNoOverflow(a: Long, b: Long, label: String): Either[Throwable, Unit] =
+    private[ratelimiter] def requireNoOverflow(a: Long, b: Long, label: String): Either[Throwable, Unit] =
       Either.cond(
         Math.multiplyHigh(a, b) == 0,
         (),
