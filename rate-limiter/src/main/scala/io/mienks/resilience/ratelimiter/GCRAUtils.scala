@@ -2,11 +2,11 @@ package io.mienks.resilience.ratelimiter
 
 private object GCRAUtils {
 
-  /** GCRA can be visualized as a point moving right on time axis. This ensures that point is to the right of of the
-    * maxim window size from current arrivedAt time.
+  /** Get current TAT or at most bucket size. GCRA can be visualized as a point moving right on time axis. If TAT falls
+    * to far behind then we move the point to the right (via max on integers) to ensure we limit the number of tokens.
     */
-  def nextTat(current: Long, arrivedAt: Long, windowNanos: Long): Long =
-    Math.max(current, arrivedAt - windowNanos)
+  def getTat(currentTat: Long, arrivedAt: Long, windowNanos: Long): Long =
+    Math.max(currentTat, arrivedAt - windowNanos)
 
   def clamp(value: Long, min: Long, max: Long): Long =
     Math.max(min, Math.min(max, value))

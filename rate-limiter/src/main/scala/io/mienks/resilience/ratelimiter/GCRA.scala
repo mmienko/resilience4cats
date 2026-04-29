@@ -1,10 +1,12 @@
 package io.mienks.resilience.ratelimiter
 
-import java.util.concurrent.atomic.AtomicLong
 import cats.effect.{Clock, Sync}
 import cats.syntax.all._
-import io.mienks.resilience.ratelimiter.GCRA.{ContinueLoop, ExitLoop, clamp}
+import io.mienks.resilience.ratelimiter.GCRA.{ContinueLoop, ExitLoop}
+import io.mienks.resilience.ratelimiter.GCRAUtils.clamp
 import io.mienks.resilience.ratelimiter.RateLimiter.RefillRate
+
+import java.util.concurrent.atomic.AtomicLong
 
 /** Thread safe, constant memory, constant time GCRA rate limiter. Core state is a single AtomicLong (TAT) updated via
   * CAS loop — no boxing, no allocation.
@@ -19,13 +21,14 @@ import io.mienks.resilience.ratelimiter.RateLimiter.RefillRate
   *   max requests allowed in a single burst
   * @param emissionPeriodNanos
   *   nanoseconds between allowed requests at steady state
-  * @param nextRequestTime
-  *   a.k.a Theoretical Arrival Time (TAT) in literature — the only mutable state
+  * @param tat
+  *   a.k.a Theoretical Arrival Time (TAT) in literature — the only mutable state. Can be thought as the next time a
+  *   request will be accepted.
   */
 class GCRA[F[_]: Sync] private (
     private val requestCapacity: Int,
     private val emissionPeriodNanos: Long,
-    private val nextRequestTime: AtomicLong
+    private val tat: AtomicLong
 ) extends RateLimiter[F] {
 
   /** Window size or bucket size in nanoseconds. Limits how far ahead TAT can drift.
@@ -44,8 +47,8 @@ class GCRA[F[_]: Sync] private (
     for {
       now <- Clock[F].monotonic.map(_.toNanos)
       res <- Sync[F].delay {
-        val current   = nextRequestTime.get()
-        val available = (now - getNextRequestTime(current, now)) / emissionPeriodNanos
+        val currentTat = tat.get()
+        val available  = (now - getTat(currentTat, now)) / emissionPeriodNanos
         clamp(value = available, min = 0L, max = requestCapacity.toLong).toInt
       }
     } yield res
@@ -78,11 +81,11 @@ class GCRA[F[_]: Sync] private (
     val cost    = emissionPeriodNanos * tokens
     var allowed = false
     while ({
-      val current            = nextRequestTime.get()
-      val newNextRequestTime = getNextRequestTime(current, arrivedAt) + cost
-      if (arrivedAt < newNextRequestTime)
+      val currentTat = tat.get()
+      val newTat     = getTat(currentTat, arrivedAt) + cost
+      if (arrivedAt < newTat)
         ExitLoop
-      else if (nextRequestTime.compareAndSet(current, newNextRequestTime)) {
+      else if (tat.compareAndSet(currentTat, newTat)) {
         allowed = true
         ExitLoop
       } else
@@ -96,13 +99,13 @@ class GCRA[F[_]: Sync] private (
   private def consumeRemainingUnsafe(arrivedAt: Long): Int = {
     var consumed = 0
     while ({
-      val current      = nextRequestTime.get()
-      val effectiveNRT = getNextRequestTime(current, arrivedAt)
+      val currentTat   = tat.get()
+      val effectiveTat = getTat(currentTat, arrivedAt)
       val available    =
-        clamp(value = (arrivedAt - effectiveNRT) / emissionPeriodNanos, min = 0L, max = requestCapacity.toLong).toInt
+        clamp(value = (arrivedAt - effectiveTat) / emissionPeriodNanos, min = 0L, max = requestCapacity.toLong).toInt
       if (available <= 0)
         ExitLoop
-      else if (nextRequestTime.compareAndSet(current, effectiveNRT + emissionPeriodNanos * available)) {
+      else if (tat.compareAndSet(currentTat, effectiveTat + emissionPeriodNanos * available)) {
         consumed = available
         ExitLoop
       } else
@@ -111,9 +114,11 @@ class GCRA[F[_]: Sync] private (
     consumed
   }
 
-  /** Get the current next request time, or slide window to keep bucket full */
-  private def getNextRequestTime(current: Long, arrivedAt: Long) =
-    Math.max(current, arrivedAt - totalRequestsPeriodNanos)
+  /** @inheritdoc
+    * [[GCRAUtils.getTat]]
+    */
+  private def getTat(current: Long, arrivedAt: Long) =
+    GCRAUtils.getTat(current, arrivedAt, totalRequestsPeriodNanos)
 }
 
 object GCRA {
@@ -141,7 +146,7 @@ object GCRA {
         new GCRA[F](
           requestCapacity = config.capacity,
           emissionPeriodNanos = emissionIntervalNanos,
-          nextRequestTime = new AtomicLong(now.toNanos - config.initialCapacity * emissionIntervalNanos)
+          tat = new AtomicLong(now.toNanos - config.initialCapacity * emissionIntervalNanos)
         )
       }
     } yield gcra
@@ -151,8 +156,5 @@ object GCRA {
 
   def full[F[_]: Sync](capacity: Int, rate: RefillRate): F[GCRA[F]] =
     apply(capacity, initialCapacity = capacity, rate)
-
-  private def clamp(value: Long, min: Long, max: Long): Long =
-    Math.max(min, Math.min(max, value))
 
 }

@@ -3,7 +3,7 @@ package io.mienks.resilience.ratelimiter
 import cats.effect.{Clock, Ref, Sync}
 import cats.syntax.all._
 import io.mienks.resilience.ratelimiter.DynamicGCRA.{State, availableTokens}
-import io.mienks.resilience.ratelimiter.GCRAUtils.{clamp, nextTat}
+import io.mienks.resilience.ratelimiter.GCRAUtils.{clamp, getTat}
 import io.mienks.resilience.ratelimiter.RateLimiter.{Config, RefillRate}
 
 import scala.util.control.NoStackTrace
@@ -22,7 +22,7 @@ class DynamicGCRA[F[_]: Sync] private (state: Ref[F, State]) extends DynamicRate
       res <- state.get.map { current =>
         availableTokens(
           now,
-          tat = nextTat(current.tat, now, current.windowNanos),
+          tat = getTat(current.tat, now, current.windowNanos),
           current.emissionPeriodNanos,
           current.capacity
         )
@@ -35,7 +35,7 @@ class DynamicGCRA[F[_]: Sync] private (state: Ref[F, State]) extends DynamicRate
       now <- nowInNanos
       res <- state.modify { current =>
         val cost   = current.emissionPeriodNanos * tokens
-        val effTat = nextTat(current.tat, now, current.windowNanos)
+        val effTat = getTat(current.tat, now, current.windowNanos)
         val newTat = effTat + cost
         if (now < newTat) (current, false)
         else (current.copy(tat = newTat), true)
@@ -46,7 +46,7 @@ class DynamicGCRA[F[_]: Sync] private (state: Ref[F, State]) extends DynamicRate
     for {
       now      <- nowInNanos
       consumed <- state.modify { current =>
-        val effTat    = nextTat(current.tat, now, current.windowNanos)
+        val effTat    = getTat(current.tat, now, current.windowNanos)
         val available = availableTokens(now, effTat, current.emissionPeriodNanos, current.capacity).toInt
         if (available <= 0) (current, 0)
         else (current.copy(tat = effTat + current.emissionPeriodNanos * available), available)
@@ -62,7 +62,7 @@ class DynamicGCRA[F[_]: Sync] private (state: Ref[F, State]) extends DynamicRate
       _   <- state.update { current =>
         val emission = current.emissionPeriodNanos
         Config.requireNoOverflow(emission, newCapacity.toLong, label = "emissionInterval * capacity")
-        val newTat = nextTat(current.tat, now, newCapacity.toLong * emission)
+        val newTat = getTat(current.tat, now, newCapacity.toLong * emission)
         State(capacity = newCapacity, emissionPeriodNanos = emission, tat = newTat)
       }
     } yield ()
@@ -88,7 +88,7 @@ class DynamicGCRA[F[_]: Sync] private (state: Ref[F, State]) extends DynamicRate
       newCapacity = config.capacity
       _ <- state.update { current =>
         val tat    = now - current.availableTokens(now) * newEmission
-        val newTat = nextTat(tat, now, newCapacity.toLong * newEmission)
+        val newTat = getTat(tat, now, newCapacity.toLong * newEmission)
         State(capacity = newCapacity, emissionPeriodNanos = newEmission, tat = newTat)
       }
     } yield ()
