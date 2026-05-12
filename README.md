@@ -35,7 +35,7 @@ def apply[F[_]: Sync](
 final case class RefillRate(requests: Int, period: FiniteDuration)
 ```
 
-For convenience, you can create an full rate limiter, with the initial capacity equal to the total capacity,
+For convenience, you can create a full rate limiter, with the initial capacity equal to the total capacity,
 or a empty rate limiter, with the initial capacity equal to 0.
 
 ```scala
@@ -56,6 +56,56 @@ for {
   consumed <- rl.consume()
   _ <- if (consumed) IO.println("Request allowed")
        else IO.println("Request rejected")
+} yield ()
+```
+
+### DynamicRateLimiter
+`DynamicRateLimiter` extends `RateLimiter` with runtime reconfiguration. The capacity and refill rate
+can be atomically updated.
+
+```scala
+trait DynamicRateLimiter[F[_]] extends RateLimiter[F] {
+  def setCapacity(capacity: Int): F[Unit]
+  def setRefillRate(rate: RefillRate): F[Unit]
+  def update(config: Config): F[Unit]
+}
+```
+
+- `setCapacity` Atomically clamps the bucket to the new size when shrinking and never grants phantom tokens when growing.
+- `setRefillRate` Atomically replace the refill rate. The number of currently-available tokens are preserved across the rate change.
+- `update` combines both semantics atomically; `Config.initialCapacity` has no effect — only `capacity` and `refillRate`.
+
+#### Usage
+
+Builders mirror the `RateLimiter` builder API via `DynamicRateLimiter` or `RateLimiter.Dynamic`:
+
+```scala
+def apply[F[_]: Sync](config: Config): F[DynamicRateLimiter[F]]
+
+def empty[F[_]: Sync](capacity: Int, rate: RefillRate): F[DynamicRateLimiter[F]]
+
+def full[F[_]: Sync](capacity: Int, rate: RefillRate): F[DynamicRateLimiter[F]]
+```
+
+Example — adjusting the refill rate at runtime to implement an AIMD-style congestion control loop:
+```scala
+import cats.effect._
+import io.mienks.resilience.ratelimiter.{DynamicRateLimiter, RateLimiter}
+import io.mienks.resilience.ratelimiter.RateLimiter.RefillRate
+import io.mienks.resilience.ratelimiter.RateLimiter.syntax._
+import scala.concurrent.duration._
+
+for {
+  rl <- DynamicRateLimiter.full[IO](capacity = 100, rate = rate"10 requests / 1 second")
+
+  // Additive increase: bump the rate after a successful probe window
+  _ <- rl.setRefillRate(rate"20 requests / 1 second")
+
+  // Multiplicative decrease: halve the rate when congestion is detected
+  _ <- rl.setRefillRate(rate"10 requests / 1 second")
+
+  // Update capacity + rate
+  _ <- rl.update(RateLimiter.Config(capacity = 50, initialCapacity = 0, refillRate = rate"5 requests / 1 second"))
 } yield ()
 ```
 
