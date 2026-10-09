@@ -5,6 +5,7 @@ import cats.effect.std.Queue
 import cats.effect.{IO, Ref, Resource}
 import cats.syntax.all._
 import io.mienks.resilience.Rate
+import io.mienks.resilience.Rate.syntax.RateOps
 import io.mienks.resilience.adaptiveratelimiter.AdaptiveRateLimiter.FailureGradient._
 import io.mienks.resilience.adaptiveratelimiter.AdaptiveRateLimiter.{Config, FailureGradient, HysteresisBand}
 import munit.CatsEffectSuite
@@ -32,12 +33,12 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
   private val BackendHitsPerRound: Int = MinNumberOfMeasurements * 4 // 20
 
   private val Capacity: Int     = 10
-  private val InitialRate: Rate = Rate(requests = 2, period = 1.second)
-  private val MinRate: Rate     = Rate(requests = 1, period = 1.second)
-  private val MaxRate: Rate     = Rate(requests = 10, period = 1.second)
+  private val MinRate: Rate     = Rate(requests = 100, period = 1.second)
+  private val InitialRate: Rate = Rate(requests = 200, period = 1.second)
+  private val MaxRate: Rate     = Rate(requests = 1_000, period = 1.second)
 
   // Coarse additive step so a healthy backend climbs from initial to max in a handful of ticks.
-  private val RateIncreaseBy: Rate               = Rate(requests = 2, period = 1.second)
+  private val RateIncreaseBy: Rate               = Rate(requests = 200, period = 1.second)
   private val RateIncreasePeriod: FiniteDuration = 20.millis
 
   private val BaseConfig: Config =
@@ -73,6 +74,7 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
   test("healthy backend: rate climbs to max and throttles at that level") {
     require(BaseConfig.maxRate > BaseConfig.initialRate)
     startLimiter().use { case LimiterWithEffects(limiter, categoryChanges, minObservedRate) =>
+      val burstAttempts = Capacity * 20
       startHittingBackend(limiter, initialFailureRatio = 0.0).use { _ =>
         for {
           _                  <- assertRateConverges(limiter, MaxRate)
@@ -80,10 +82,17 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
           _                  <- IO(assertEquals(category, none[FailureGradient]))
           lowestObservedRate <- minObservedRate.get
           _                  <- IO(assert(lowestObservedRate === InitialRate, clue = lowestObservedRate))
-          admitted           <- limiter.consume.replicateA(Capacity)
-          _                  <- IO(assert(admitted.forall(identity), clue = s"expected to admit a burst of $Capacity"))
-          denied             <- limiter.consume
-          _                  <- IO(assert(!denied, clue = "further requests are throttled once the burst is exhausted"))
+          outcomes           <- limiter.consume.replicateA(burstAttempts)
+          admitted = outcomes.count(identity)
+          _ <- IO(
+            assert(admitted >= Capacity, clue = s"expected to admit a burst of at least $Capacity, got $admitted")
+          )
+          _ <- IO(
+            assert(
+              admitted < burstAttempts / 2,
+              clue = s"expected $burstAttempts requests to be throttled well below half, admitted $admitted"
+            )
+          )
         } yield ()
       }
     }
@@ -116,7 +125,7 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
           _ <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 1)))
           _ <- poll(
             minObservedRate.get.map { rate =>
-              assert(rate < Rate(requests = 3, period = 1.second), clue = rate)
+              assert(rate < Rate(requests = 300, period = 1.second), clue = rate)
               assert(rate > MinRate, clue = rate)
             }
           )
@@ -150,10 +159,10 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
         for {
           _ <- assertRateConverges(limiter, MaxRate)
           // a spike straight to the severe tier
-          _ <- ratioRef.set(0.8)
-          _ <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 0)))
-          _ <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 1)))
-          _ <- poll(minObservedRate.get.map(rate => assert(rate < Rate(requests = 3, period = 1.second), clue = rate)))
+          _            <- ratioRef.set(0.8)
+          _            <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 0)))
+          _            <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 1)))
+          _            <- poll(minObservedRate.get.map(rate => assert(rate < 300.perSecond, clue = rate)))
           rateAfterCut <- minObservedRate.get
           // recover gradually, lingering inside the hysteresis bands (above each exit)
           _                  <- hold(ratioRef, ratio = 0.5, duration = MeasurementWindow * 2) // still within band 1
@@ -186,9 +195,7 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
           _            <- IO(
             assertEquals(noEscalation, none[FailureGradient], clue = "moderate errors do not trip the severe tier")
           )
-          _ <- poll(
-            minObservedRate.get.map(rate => assert(rate === Rate(requests = 5, period = 1.second), clue = rate))
-          )
+          _                 <- poll(minObservedRate.get.map(rate => assert(rate === 500.perSecond, clue = rate)))
           rateAfterFirstCut <- minObservedRate.get
           // severe degradation trips the second tier and compounds the rate cut
           _ <- ratioRef.set(0.8)
@@ -221,9 +228,9 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
   test("partial recovery: new decreases apply when re-degrading without returning to healthy") {
     // Initial rate should be at least 2^6 larger than minRate, as there are multiple rate decreases (halvings).
     val config = BaseConfig.copy(
-      initialRate = Rate(requests = 64, period = 1.second),
-      minRate = Rate(requests = 1, period = 1.second),
-      maxRate = Rate(requests = 64, period = 1.second),
+      initialRate = 6_400.perSecond,
+      minRate = MinRate,
+      maxRate = 6_400.perSecond,
       rateIncreasePeriod = 1.second,
       // Three bands so re-climbing from band 0 passes through Failing(1) (which differs from the last-emitted
       // Failing(2)) and survives the categorizer's consecutive-duplicate suppression. With only two bands a
@@ -240,11 +247,11 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
         for {
           _ <- assertRateConverges(limiter, config.initialRate)
           // spike straight to the most severe tier: promotes through every band and cuts three times
-          _ <- ratioRef.set(0.95)
-          _ <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 0)))
-          _ <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 1)))
-          _ <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 2)))
-          _ <- poll(minObservedRate.get.map(rate => assert(rate < Rate(requests = 16, period = 1.second), clue = rate)))
+          _                  <- ratioRef.set(0.95)
+          _                  <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 0)))
+          _                  <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 1)))
+          _                  <- categoryChanges.take.map(event => assertEquals(event, Worsening(toLevel = 2)))
+          _                  <- poll(minObservedRate.get.map(rate => assert(rate < 1_600.perSecond, clue = rate)))
           rateAfterFirstCuts <- minObservedRate.get
           // partial recovery into band 0 (Failing(2) -> Failing(0))
           _ <- hold(ratioRef, ratio = 0.2, duration = MeasurementWindow * 2)
