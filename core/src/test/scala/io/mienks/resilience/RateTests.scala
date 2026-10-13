@@ -123,6 +123,15 @@ final class RateTests extends FunSuite {
     assertEquals(rate.perHour, rate.eventsPer(unit = TimeUnit.HOURS))
   }
 
+  test("multiplying by a duration counts expected events without overflowing") {
+    assertEquals(Rate(requests = 1, period = 1.second) * 1.second, 1L)
+    assertEquals(Rate(requests = 50, period = 1.second) * 100.millis, 5L)
+    assertEquals(Rate(requests = 1, period = 1.second) * 40.millis, 0L) // truncates towards zero
+    assertEquals(Rate(requests = 10_000, period = 1.second) * 15.seconds, 150_000L)
+    assertEquals(Rate.Max * 1.day, Rate.Max.perDay)
+    assertEquals(Rate.Max * 7.days, Rate.Max.perDay * 7L)
+  }
+
   test("emissionIntervalNanos uses ceiling division") {
     assertEquals(Rate(requests = 1, period = 1.second).emissionIntervalNanos, 1.second.toNanos)
     assertEquals(Rate(requests = 2, period = 1.second).emissionIntervalNanos, 500.millis.toNanos)

@@ -44,6 +44,17 @@ final class Rate private (val perDay: Long) extends AnyVal with Ordered[Rate] {
   def max(that: Rate): Rate =
     if (this >= that) this else that
 
+  /** (events / time) * time = events
+    *
+    * @param duration
+    *   time frame that rate is applied to
+    * @return
+    *   number of events over `duration`, truncated toward zero
+    */
+  def *(duration: FiniteDuration): Long =
+    // Widened because `perDay * duration.toNanos` overflows a `Long` past roughly one second at Rate.Max.
+    (BigInt(perDay) * BigInt(duration.toNanos) / BigInt(Rate.NanosPerDay)).toLong
+
   def +(that: Rate): Rate = {
     val newRate = perDay + that.perDay
     if (newRate >= Rate.MaxPerDay) Rate.Max
@@ -120,6 +131,7 @@ object Rate {
   object syntax {
     implicit class RateOps(val requests: Int) extends AnyVal {
       def per(period: FiniteDuration): Rate = Rate(requests = requests, period = period)
+      def perSecond: Rate                   = Rate(requests = requests, period = 1.second)
     }
 
     implicit class RateInterpolator(val sc: StringContext) extends AnyVal {

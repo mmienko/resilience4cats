@@ -65,10 +65,11 @@ class ApproximateFailureRatesTests extends CatsEffectSuite {
 
   test("rejects invalid measurement configuration") {
     List(
-      BaseConfig.copy(numberOfSlotsForMeasurements = 0) -> "slots > 0",
-      BaseConfig.copy(slotDuration = 0.seconds)         -> "slot duration > 0ms",
-      BaseConfig.copy(measurementPeriod = 0.seconds)    -> "measurements period > 0ms",
-      BaseConfig.copy(minNumberOfMeasurements = 0)      -> "min measurements > 0"
+      BaseConfig.copy(numberOfSlotsForMeasurements = 0)                      -> "slots > 0",
+      BaseConfig.copy(slotDuration = 0.seconds)                              -> "slot duration > 0ms",
+      BaseConfig.copy(measurementPeriod = 0.seconds)                         -> "measurements period > 0ms",
+      BaseConfig.copy(minNumberOfMeasurements = 0)                           -> "min measurements > 0",
+      BaseConfig.copy(measurementPeriod = BaseConfig.slotDuration + 1.milli) -> "measurements period <= slot duration"
     ).traverse_ { case (config, expectedMessage) =>
       assertInvalid(config = config, expectedMessage = expectedMessage)
     }
