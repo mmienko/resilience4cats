@@ -196,6 +196,23 @@ class DynamicGCRATests extends RateLimiterTests {
     }
   }
 
+  test("setCapacity grow: bucket left idle at capacity grants no phantom tokens") {
+    TestControl.executeEmbed {
+      for {
+        rl <- DynamicGCRA.full[IO](capacity = 10, RefillRate(1, 1.second))
+        _  <- rl.consume(5).map(assertEquals(_, true))
+        _  <- IO.sleep(30.seconds)
+        _  <- rl.requests.map(assertEquals(_, 10))
+        _  <- rl.setCapacity(50)
+        _  <- rl.capacity.map(assertEquals(_, 50))
+        _  <- rl.requests.map(assertEquals(_, 10))
+
+        _ <- IO.sleep(40.seconds)
+        _ <- rl.requests.map(assertEquals(_, 50))
+      } yield ()
+    }
+  }
+
   test("setCapacity grow: partial bucket preserves availability") {
     TestControl.executeEmbed {
       for {

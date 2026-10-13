@@ -66,10 +66,11 @@ class DynamicGCRA[F[_]: Sync] private (state: Ref[F, State]) extends DynamicRate
         Config.requireNoOverflow(emission, newCapacity.toLong, label = "emissionInterval * capacity") match {
           case Left(error) => (current, error.some)
           case Right(_)    =>
+            val oldTat = getTat(currentTat = current.tat, arrivedAt = now, windowNanos = current.windowNanos)
             (
               current.copy(
                 capacity = newCapacity,
-                tat = getTat(current.tat, now, newCapacity.toLong * emission)
+                tat = getTat(currentTat = oldTat, arrivedAt = now, windowNanos = newCapacity.toLong * emission)
               ),
               none[Throwable]
             )
