@@ -326,6 +326,16 @@ class AdaptiveRateLimiterTests extends CatsEffectSuite {
     } yield ()
   }
 
+  test("startup rejects a minRate too low to fill the measurement window") {
+    // A saturated 40ms window holds exactly minNumberOfMeasurements (4) outcomes at 100/s, but only 3 at 99/s.
+    assertEquals(BaseConfig.validate, ().asRight[String])
+    val config = BaseConfig.copy(minRate = Rate(requests = 99, period = 1.second))
+
+    interceptIO[IllegalArgumentException](AdaptiveRateLimiter.start[IO](config = config).use_).map { error =>
+      assert(error.getMessage.contains("minRate must be able to fill the measurement window"), clue = error.getMessage)
+    }
+  }
+
   private def startLimiter(config: Config = BaseConfig): Resource[IO, LimiterWithEffects] =
     for {
       categoryChanges <- Resource.eval(Queue.unbounded[IO, FailureGradient])
