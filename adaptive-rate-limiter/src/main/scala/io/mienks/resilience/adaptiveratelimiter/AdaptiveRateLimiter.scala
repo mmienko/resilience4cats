@@ -1,6 +1,8 @@
 package io.mienks.resilience.adaptiveratelimiter
 
 import cats.data.NonEmptyList
+import cats.effect.implicits.genSpawnOps
+import cats.effect.std.Queue
 import cats.effect.{Async, Ref, Resource, Spawn, Sync, Temporal}
 import cats.syntax.all._
 import cats.{Applicative, ApplicativeThrow, Monad}
@@ -102,9 +104,11 @@ object AdaptiveRateLimiter {
     * @param slotDuration
     *   duration of each measurement slot
     * @param measurementPeriod
-    *   how often the background fiber samples the LongAdder counters
+    *   how often the background fiber samples the LongAdder counters; must not exceed [[slotDuration]]
     * @param minNumberOfMeasurements
-    *   the sliding window must hold at least this many samples before the failure ratio is reported
+    *   the sliding window must hold at least this many samples before the failure ratio is reported. Must be reachable
+    *   at [[minRate]] within one measurement window: a floor rate too low to fill the window would never report a
+    *   ratio, so the categorizer could never emit a recovery and the estimate would stay pinned
     * @param failureLevels
     *   ordered (least- to most-severe) hysteresis bands keyed on failure ratio
     */
@@ -133,6 +137,8 @@ object AdaptiveRateLimiter {
       minNumberOfMeasurements = minNumberOfMeasurements
     )
 
+    def measurementWindow: FiniteDuration = approximateFailureRatesConfig.measurementWindow
+
     val failureRateCategorizerConfig = FailureRateCategorizer.Config(
       failureLevels = failureLevels
     )
@@ -147,6 +153,19 @@ object AdaptiveRateLimiter {
       ),
       rateDecreaseBy = rateDecreaseBy
     )
+
+    def validate: Either[String, Unit] = {
+      val outcomesAtMinRate = minRate * measurementWindow
+      check(
+        outcomesAtMinRate >= minNumberOfMeasurements.toLong,
+        msg = s"""
+         |minRate must be able to fill the measurement window, otherwise a rate driven to the floor can never 
+         |report a failure ratio and the control loop can no longer observe a recovery: a saturated 
+         |$measurementWindow window at ${minRate.perSecond.toString}/s holds at most 
+         |${outcomesAtMinRate.toString} outcomes, but minNumberOfMeasurements is 
+         |${minNumberOfMeasurements.toString}""".stripMargin
+      )
+    }
   }
 
   object Config {
@@ -250,6 +269,9 @@ object AdaptiveRateLimiter {
       onError: Throwable => F[Unit]
   ): Resource[F, AdaptiveRateLimiter[F]] =
     for {
+      _ <- Resource.eval {
+        ApplicativeThrow[F].fromEither(config.validate.leftMap(new IllegalArgumentException(_)))
+      }
       rateLimiter                  <- Resource.eval { RateLimiter.Dynamic[F](config = config.rateLimiterConfig) }
       failureRatesProducerConsumer <- Resource.eval {
         ApproximateFailureRates.createProducerAndConsumer(config = config.approximateFailureRatesConfig)
@@ -292,6 +314,9 @@ object AdaptiveRateLimiter {
           _ <- check(numberOfSlotsForMeasurements > 0, "slots > 0")
           _ <- check(slotDuration > Duration.Zero, "slot duration > 0ms")
           _ <- check(measurementPeriod > Duration.Zero, "measurements period > 0ms")
+          // Sampling less often than a slot rotates several buckets at once, collapsing the window towards a single
+          // measurement period and obviating `measurementWindow`.
+          _ <- check(measurementPeriod <= slotDuration, "measurements period <= slot duration")
           _ <- check(minNumberOfMeasurements > 0, "min measurements > 0")
         } yield ()
     }
