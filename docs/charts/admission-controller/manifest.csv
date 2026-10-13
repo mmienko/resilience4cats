@@ -1,0 +1,10 @@
+scenario,description,samples_file,events_file
+steady-overload,"Constant capacity below offered load: the controller sheds the excess, holding admitted near k*capacity and goodput near capacity (a smooth plateau, no sawtooth).",steady-overload-samples.csv,
+capacity-drop,A sudden capacity drop pushes the rejection probability from zero up to a steady shedding level.,capacity-drop-samples.csv,
+drop-then-recover,"After a capacity collapse and shedding, restored capacity drives the rejection probability back to zero (k>1 guarantees the gate fully reopens).",drop-then-recover-samples.csv,
+slow-degradation,"Capacity steps through four overload levels. The two milder levels keep the failure rate inside k=2's 50% dead zone, so the controller tolerates the throttling without shedding; the two harsher levels cross it and the rejection probability steps up.",slow-degradation-samples.csv,
+steady-overload-k1,"k=1 (the plain failure ratio): admitted collapses to around capacity with no wasted backend work, but the loop is only marginally stable - the rate is jittery and often under-utilizes the backend.",steady-overload-k1-samples.csv,
+steady-overload-k1.5,"k=1.5: a middle ground - the admitted plateau settles around 1.5x capacity, between the k=1 and k=2 cases.",steady-overload-k1.5-samples.csv,
+drop-then-recover-k1.5,"k=1.5: a lower admitted plateau than k=2 while overloaded, and the gate still fully reopens on recovery.",drop-then-recover-k1.5-samples.csv,
+drop-then-recover-k1,"k=1 (the plain failure ratio): only marginally stable, the rejection probability lingers after capacity is restored instead of snapping back to zero - the gate is slow to reopen.",drop-then-recover-k1-samples.csv,
+slow-degradation-k1.5,"The same four-level capacity staircase at k=1.5, whose dead zone shrinks to a ~33% failure rate: the controller starts shedding one level earlier than k=2 - on the second (milder) step it tolerated before.",slow-degradation-k1.5-samples.csv,

@@ -1,0 +1,5 @@
+scenario,description,samples_file,events_file
+outage-and-recovery,"A full outage trips the breaker. Each failed half-open probe doubles the open time (exponential backoff, capped at maxResetTimeout), so the recovered backend is only noticed at the next probe.",outage-and-recovery-samples.csv,outage-and-recovery-events.csv
+failure-threshold,"The backend error rate steps up. Below failureRateThreshold the breaker stays closed and lets the errors through; once the windowed failure rate reaches it the breaker opens, until probes succeed again.",failure-threshold-samples.csv,failure-threshold-events.csv
+transient-spikes-short-window,"A count-based window of the last 100 calls (~0.2s of traffic) is short enough that every 150ms error spike trips the breaker, rejecting healthy traffic until the next probe.",transient-spikes-short-window-samples.csv,transient-spikes-short-window-events.csv
+transient-spikes-long-window,"A 2s time-based window dilutes each 150ms error spike to under 10% failures, so the breaker rides the spikes out and never opens.",transient-spikes-long-window-samples.csv,

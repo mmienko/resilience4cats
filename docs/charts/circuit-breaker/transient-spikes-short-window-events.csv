@@ -1,0 +1,15 @@
+elapsed_ms,kind,detail
+1121,open,250
+1373,half_open,
+1396,closed,
+3120,open,250
+3372,half_open,
+3398,open,500
+3878,half_open,
+3903,closed,
+5117,open,250
+5369,half_open,
+5392,closed,
+7117,open,250
+7369,half_open,
+7394,closed,

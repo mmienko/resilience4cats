@@ -1,0 +1,12 @@
+elapsed_ms,kind,detail
+4139,open,250
+4390,half_open,
+4413,open,500
+4893,half_open,
+4918,open,1000
+5900,half_open,
+5924,open,2000
+7903,half_open,
+7927,open,2000
+9911,half_open,
+9934,closed,

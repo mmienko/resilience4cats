@@ -1,0 +1,7 @@
+scenario,description,samples_file,events_file
+burst-then-throttle,"A full bucket lets the start of a burst through at the offered rate, then admission flattens to the refill rate. Idle time refills the bucket, capped at its capacity.",burst-then-throttle-samples.csv,
+load-staircase,Offered load steps from below to above the refill rate. Below it every call is admitted and the bucket stays full; above it the bucket drains and admission caps at the refill rate.,load-staircase-samples.csv,
+bursty-load-small-bucket,"Bursts of 100 calls against a 10-token bucket: only the stored tokens plus what refills during the burst get through, so most of each burst is rejected although the average load equals the refill rate.",bursty-load-small-bucket-samples.csv,
+bursty-load-large-bucket,"The same bursts against a 100-token bucket: the idle time between bursts refills it, so every burst is absorbed in full while the long-run admitted rate still matches the refill rate.",bursty-load-large-bucket-samples.csv,
+dynamic-refill-rate,"setRefillRate changes the rate under a steady 200 rps load: admission follows the lower of the offered and refill rates, and the bucket's stored tokens carry across each change.",dynamic-refill-rate-samples.csv,
+dynamic-capacity,"setCapacity resizes the bucket between bursts: shrinking clamps the stored tokens at once, growing lets them refill gradually (no phantom tokens), and each burst gets through in proportion.",dynamic-capacity-samples.csv,
