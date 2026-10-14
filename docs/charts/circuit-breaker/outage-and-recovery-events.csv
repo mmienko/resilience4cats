@@ -1,0 +1,14 @@
+elapsed_ms,kind,detail
+1121,open,250
+1374,half_open,
+1397,open,500
+1877,half_open,
+1901,open,1000
+2881,half_open,
+2905,open,2000
+4886,half_open,
+4910,open,2000
+6890,half_open,
+6914,open,2000
+8894,half_open,
+8919,closed,

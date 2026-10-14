@@ -1,56 +1,77 @@
 # Charts
 
-Behavior charts for the [`adaptive-rate-limiter`](../adaptive-rate-limiter) and the
-[`admission-controller`](../admission-controller). This module runs each structure through a set of closed-loop
-scenarios against a *simulated* backend, exports the resulting timeseries as CSV, and renders them to PNG with
-matplotlib. The images are what you see embedded in the project documentation.
-
-There are two independent pipelines that share the same simulated [`Backend`](src/main/scala/io/mienks/resilience/charts/Backend.scala)
-but write to separate data and image directories so they live side by side:
-
-- **AdaptiveRateLimiter** (`charts/run` -> `docs/charts/data/`, rendered by `render.py`). Documented below.
-- **AdmissionController** (`charts/runMain ...GenerateAdmissionCharts` -> `docs/charts/admission-data/`, rendered by
-  `render_admission.py`). See [AdmissionController charts](#admissioncontroller-charts).
+Behavior charts for the [`adaptive-rate-limiter`](../adaptive-rate-limiter), the
+[`admission-controller`](../admission-controller), the [`rate-limiter`](../rate-limiter), and the
+[`circuit-breaker`](../circuit-breaker). This module drives each component through a set of scripted scenarios,
+exports the resulting timeseries as CSV, and renders them to PNG with matplotlib. The images are what you see embedded
+in the project documentation.
 
 This is a documentation/tooling module only — it is not published (`publish / skip := true`).
 
 ## Pipeline
 
-Generating charts is a two-stage pipeline: Scala produces the data, Python renders it.
-
-### 1. Generate the data (Scala)
-
-```bash
-sbt "charts/run"
-```
-
-This drives every [`Scenario`](src/main/scala/io/mienks/resilience/charts/Scenario.scala) through the limiter (in
-parallel) and writes, under `docs/charts/data/`:
-
-- `<scenario>-samples.csv` — the dense sampled timeseries (`elapsed_ms`, `aimd_rps`, `admitted_rps`,
-  `backend_capacity_rps`, `observed_failure_ratio`).
-- `<scenario>-events.csv` — discrete control-loop events (rate changes and `FailureGradient` band crossings).
-- `manifest.csv` — the index of scenarios the renderer reads.
-
-You can override the output directory: `sbt "charts/run /tmp/charts-data"`.
-
-### 2. Render the charts (Python)
+Generating charts is a staged pipeline: Scala simulates and writes CSVs, Python renders them, and nothing lands in
+`docs/` until you have compared the result and promoted it.
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r charts/scripts/requirements.txt
-python charts/scripts/render.py
+python3 -m venv .venv && .venv/bin/pip install -r charts/scripts/requirements.txt  # once
+
+sbt "charts/run [component ...]"                                   # 1. simulate: CSVs into the staging dir
+.venv/bin/python charts/scripts/charts.py render [component ...]   # 2. render: PNGs into the staging dir
+.venv/bin/python charts/scripts/charts.py compare [component ...]  # 3. review: what changed vs docs/
+.venv/bin/python charts/scripts/charts.py promote [component ...]  # 4. publish: mirror staging into docs/
 ```
 
-`render.py` is data-driven: it reads `manifest.csv` and writes one PNG per scenario into
-`docs/images/adaptive-rate-limiter/`, so adding a scenario on the Scala side requires no change to the Python.
-Override the directories with `--data-dir` / `--out-dir`.
+The components are `adaptive-rate-limiter`, `admission-controller`, `rate-limiter`, and `circuit-breaker`; every
+command defaults to all of them (or, after the first step, to all of those with staged data).
+
+The staging dir, `charts/target/staging/`, mirrors the layout of `docs/` (and like any `target/` it is ignored by git
+and wiped by `sbt clean`):
+
+| | staged | promoted |
+|---|---|---|
+| data | `charts/target/staging/charts/<component>/` | `docs/charts/<component>/` |
+| images | `charts/target/staging/images/<component>/` | `docs/images/<component>/` |
+
+- **Simulate.** [`GenerateCharts`](src/main/scala/io/mienks/resilience/charts/GenerateCharts.scala) runs the
+  components one after another, and each component's scenarios in parallel. Per component it writes
+  `<scenario>-samples.csv` (the sampled timeseries), `<scenario>-events.csv` (discrete events such as rate changes or
+  breaker transitions, only for scenarios that have any), and `manifest.csv` (the index the renderer reads).
+- **Render.** `render` turns every scenario in a staged manifest into a PNG, using the component's renderer in
+  [`renderers/`](scripts/renderers). Adding a scenario on the Scala side needs no change to the Python. To re-render
+  the data already in `docs/` (to review a renderer change on its own, without simulation noise), use
+  `render --from-docs`.
+- **Compare.** `compare` prints which images and CSVs were changed, added, or removed relative to `docs/` (images are
+  compared by pixels) and writes `charts/target/staging/compare.html`, which shows the current and staged image of
+  every differing scenario side by side.
+- **Promote.** `promote` makes the component's CSVs and PNGs in `docs/` an exact copy of the staged ones, deleting
+  any scenario that no longer exists. It refuses if a staged image is missing or older than its data.
+
+The simulations run in real time on a thread pool, so two runs never produce identical timeseries: expect a promoted
+chart to differ slightly from the one before it even when nothing changed. Before recording, each component's
+scenarios run for a few seconds and are discarded, to warm up the JIT, whose compilation stalls would otherwise show
+up in the timeseries as gaps.
+
+### Code layout
+
+Each component has its own package under
+[`io.mienks.resilience.charts`](src/main/scala/io/mienks/resilience/charts) with a `Scenario.scala` (the scripted
+scenarios) and a `Simulation.scala` (wires the component to its load and backend, and samples it). The shared pieces
+live in the root package:
+
+- `Component` / `Chart` / `Recording` — what a simulation exposes to `GenerateCharts`.
+- `Timeline` — samples a simulation on a fixed period and records its discrete events.
+- `Meter` — counts calls and reports their rate since the previous sample.
+- `Load.openLoop` — offers calls at a scripted rate regardless of how fast they complete.
+- `Backend` — the capacity-limited backend described below.
+- `CsvTable` — writes the CSVs.
 
 ## How the simulated backend works
 
 The whole point of the adaptive rate limiter is to *discover* the rate a downstream resource can sustain. To exercise
 that, we need a backend whose failure rate depends on how hard we hit it — otherwise the control loop has nothing to
-react to. That backend is modeled in [`Backend.scala`](src/main/scala/io/mienks/resilience/charts/Backend.scala).
+react to. That backend is modeled in [`Backend.scala`](src/main/scala/io/mienks/resilience/charts/Backend.scala), and
+is shared by the adaptive rate limiter and admission controller charts.
 
 A backend phase is a **hard ceiling** plus zero or more **soft ceilings**, each a token bucket (the project's own
 [`DynamicRateLimiter`](../rate-limiter)):
@@ -74,22 +95,27 @@ Two backend shapes are used:
 
 - **Hard ceiling only** (`softCeilings = Nil`): one bucket at the base capacity whose overflow always fails. The
   failure ratio is essentially `1 - capacity/admitted`.
-- **Graded** (a soft ceiling under the hard one): e.g. over `rps(80)` fail 100%, but already over the smaller
-  `rps(40)` fail 50%. This produces two distinct failure levels and trips both hysteresis bands.
+- **Graded** (a soft ceiling under the hard one): e.g. over `80.perSecond` fail 100%, but already over the smaller
+  `40.perSecond` fail 50%. This produces two distinct failure levels and trips both hysteresis bands.
 
-A [`Scenario`](src/main/scala/io/mienks/resilience/charts/Scenario.scala) is the limiter config plus a
-`NonEmptyList[Backend.Phase]` — the backend's capacity over time. A hard ceiling *below* the limiter's `maxRate` is a
-degraded backend; raising it again is recovery. The whole schedule is handed to `Backend.start` up front, and an
-internal fiber walks it, reconfiguring the ceilings as each phase begins (there is no external capacity mutator). A
-shared `Warmup` settle time is folded into the first phase's duration.
-[`SimulationRunner`](src/main/scala/io/mienks/resilience/charts/SimulationRunner.scala) offers load through
-`limiter.protect`, samples the limiter's rate/failure-ratio on a fixed cadence, and records every control-loop event.
+A scenario's `NonEmptyList[Backend.Phase]` is the backend's capacity over time. A hard ceiling *below* the limiter's
+`maxRate` is a degraded backend; raising it again is recovery. The whole schedule is handed to `Backend.start` up
+front, and an internal fiber walks it, reconfiguring the ceilings as each phase begins.
+
+The circuit breaker charts use a different backend,
+[`FlakyBackend`](src/main/scala/io/mienks/resilience/charts/circuitbreaker/FlakyBackend.scala), whose error rate is
+scripted directly rather than emerging from load: a breaker reacts to failures, not to throughput. The rate limiter
+charts need no backend at all.
+
+## Adaptive rate limiter
+
+The [scenarios](src/main/scala/io/mienks/resilience/charts/adaptiveratelimiter/Scenario.scala) drive the limiter in a
+closed loop against the backend above: a few clients call through `limiter.protect`, and the limiter's rate and
+failure ratio are sampled on a fixed cadence alongside its `onRateChange` and `onFailureCategoryChange` events.
 
 > Note: rates are kept in the hundreds of rps even though the time scale is compressed to a few seconds. The closed
 > loop derives the failure ratio from requests the limiter *actually admits*, so each measurement window needs enough
 > admitted requests for the ratio to be meaningful.
-
-## Scenarios
 
 Each chart plots, on the left axis, the **AIMD rate estimate** (controlled variable), the **admitted** throughput
 (measured), and the **backend capacity** (the bottleneck being discovered, dashed); on the right axis the limiter's
@@ -132,28 +158,19 @@ A two-tier backend (soft + hard ceiling) produces two distinct failure levels ac
 
 ![graded-degradation](../docs/images/adaptive-rate-limiter/graded-degradation.png)
 
-## AdmissionController charts
+## Admission controller
 
-The [`admission-controller`](../admission-controller) charts tell a different story than the rate limiter. Instead of
-discovering and tracking a *rate*, the controller probabilistically sheds load so the backend's accepted goodput stays
-near its capacity. Under overload it keeps the admitted load near `k * capacity` (with the SRE default `k = 2.0`),
-holding a smooth plateau rather than the AIMD sawtooth, and on recovery the rejection probability returns to zero
-because `k > 1` guarantees the gate fully reopens.
-
-### Generate and render
-
-```bash
-sbt "charts/runMain io.mienks.resilience.charts.GenerateAdmissionCharts"   # -> docs/charts/admission-data/
-python charts/scripts/render_admission.py                                  # -> docs/images/admission-controller/
-```
-
-The Scala app writes `<scenario>-samples.csv` (`elapsed_ms`, `offered_rps`, `admitted_rps`, `accepted_rps`,
-`capacity_rps`, `rejection_probability`) and a `manifest.csv`. There is no events file — the controller has no
-discrete state transitions to mark. `render_admission.py` is data-driven the same way `render.py` is.
+The admission controller charts tell a different story than the rate limiter. Instead of discovering and tracking a
+*rate*, the controller probabilistically sheds load so the backend's accepted goodput stays near its capacity. Under
+overload it keeps the admitted load near `k * capacity` (with the SRE default `k = 2.0`), holding a smooth plateau
+rather than the AIMD sawtooth, and on recovery the rejection probability returns to zero because `k > 1` guarantees the
+gate fully reopens.
 
 The same simulated backend is reused: any call admitted *above* the hard ceiling is "throttled" (a failure), which is
-exactly the downstream-overload signal the controller sheds against. Each scenario holds the offered load constant and
-well above the degraded capacities, then schedules capacity over time via `Backend.Phase`.
+exactly the downstream-overload signal the controller sheds against. Each
+[scenario](src/main/scala/io/mienks/resilience/charts/admissioncontroller/Scenario.scala) holds the offered load
+constant and well above the degraded capacities, then schedules capacity over time via `Backend.Phase`. There is no
+events file — the controller has no discrete state transitions to mark.
 
 Each chart plots, on the left axis, the **client input rate** (load before the gate), the **client allowed rate**
 (what the controller admits), the **backend actual rate** (goodput, allowed minus throttled), and the **backend
@@ -224,3 +241,88 @@ The same four-level staircase as [slow-degradation](#slow-degradation), but at `
 so the controller begins shedding one step earlier. A direct, visual read of how `k` sets the tolerance threshold.
 
 ![slow-degradation-k1.5](../docs/images/admission-controller/slow-degradation-k1.5.png)
+
+## Rate limiter
+
+The rate limiter charts are open loop: a client offers calls at a scripted rate through a `DynamicRateLimiter`, which
+admits a call only if it can take a token. Each
+[scenario](src/main/scala/io/mienks/resilience/charts/ratelimiter/Scenario.scala) is a list of load phases, and a
+phase may also reconfigure the limiter with `setRefillRate` or `setCapacity` as it begins.
+
+Each chart plots, on the left axis, the **offered** and **admitted** rates and the limiter's **refill rate** (dashed);
+on the right axis the **available tokens** and the **bucket capacity** (dashed). The refill rate bounds the long-run
+admitted rate, while the bucket's stored tokens decide how much of a burst gets through above it.
+
+### burst-then-throttle
+A full bucket lets the start of a burst through at the offered rate, then admission flattens to the refill rate. Idle
+time refills the bucket, capped at its capacity.
+
+![burst-then-throttle](../docs/images/rate-limiter/burst-then-throttle.png)
+
+### load-staircase
+Offered load steps from below to above the refill rate. Below it every call is admitted and the bucket stays full;
+above it the bucket drains and admission caps at the refill rate.
+
+![load-staircase](../docs/images/rate-limiter/load-staircase.png)
+
+### bursty-load-small-bucket
+Bursts of 100 calls (500 rps for 200ms every second, so the average load equals the refill rate) against a 10-token
+bucket: only the stored tokens plus what refills during the burst get through, so most of each burst is rejected.
+
+![bursty-load-small-bucket](../docs/images/rate-limiter/bursty-load-small-bucket.png)
+
+### bursty-load-large-bucket
+The same bursts against a 100-token bucket: the idle time between bursts refills it, so every burst is absorbed in
+full while the long-run admitted rate still matches the refill rate.
+
+![bursty-load-large-bucket](../docs/images/rate-limiter/bursty-load-large-bucket.png)
+
+### dynamic-refill-rate
+`setRefillRate` changes the rate under a steady 200 rps load: admission follows the lower of the offered and refill
+rates, and the bucket's stored tokens carry across each change.
+
+![dynamic-refill-rate](../docs/images/rate-limiter/dynamic-refill-rate.png)
+
+### dynamic-capacity
+`setCapacity` resizes the bucket between bursts: shrinking clamps the stored tokens at once, while growing lets them
+refill gradually at the refill rate (no phantom tokens), and each burst gets through in proportion to the bucket.
+
+![dynamic-capacity](../docs/images/rate-limiter/dynamic-capacity.png)
+
+## Circuit breaker
+
+An open-loop client offers a steady 500 rps through a `CircuitBreaker` to the `FlakyBackend`, whose error rate each
+[scenario](src/main/scala/io/mienks/resilience/charts/circuitbreaker/Scenario.scala) scripts over time. The breaker
+uses a 0.5 `failureRateThreshold`, 3 half-open calls, and exponential backoff from a 250ms `resetTimeout` up to a 2s
+`maxResetTimeout`. The sliding window is passed in as a custom measurement strategy so the simulation can sample the
+same windowed failure rate the breaker acts on.
+
+Each chart plots, on the left axis, the **offered** rate and how it splits into calls that **succeeded**, **failed**,
+or were **rejected** by the breaker without reaching the backend; on the right axis the backend's scripted **error
+rate** (dashed), the breaker's **windowed failure rate**, and the **failure rate threshold** (dotted). Open periods are
+shaded red and labeled with their reset timeout; the thin orange bands are half-open probes.
+
+### outage-and-recovery
+A full outage trips the breaker. Each failed half-open probe doubles the open time (exponential backoff, capped at
+`maxResetTimeout`), so the recovered backend is only noticed at the next probe.
+
+![outage-and-recovery](../docs/images/circuit-breaker/outage-and-recovery.png)
+
+### failure-threshold
+The backend error rate steps up. Below `failureRateThreshold` the breaker stays closed and lets the errors through;
+once the windowed failure rate reaches it the breaker opens, until probes succeed again. A probe fails if any of its
+3 calls does, so at the final 10% error rate a probe still fails about a quarter of the time.
+
+![failure-threshold](../docs/images/circuit-breaker/failure-threshold.png)
+
+### transient-spikes-short-window
+A count-based window of the last 100 calls (~0.2s of traffic) is short enough that every 150ms error spike trips the
+breaker, rejecting healthy traffic until the next probe.
+
+![transient-spikes-short-window](../docs/images/circuit-breaker/transient-spikes-short-window.png)
+
+### transient-spikes-long-window
+A 2s time-based window dilutes each 150ms error spike to under 10% failures, so the breaker rides the spikes out and
+never opens.
+
+![transient-spikes-long-window](../docs/images/circuit-breaker/transient-spikes-long-window.png)

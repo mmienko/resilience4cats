@@ -112,6 +112,21 @@ for {
 } yield ()
 ```
 
+### Behavior
+The refill rate bounds the long-run admitted rate, while the bucket's capacity decides how much of a burst gets
+through above it. The same bursts, averaging the refill rate, against a 10-token and a 100-token bucket:
+
+![bursty-load-small-bucket](docs/images/rate-limiter/bursty-load-small-bucket.png)
+
+![bursty-load-large-bucket](docs/images/rate-limiter/bursty-load-large-bucket.png)
+
+Resizing a `DynamicRateLimiter` between bursts: shrinking clamps the stored tokens at once, growing lets them refill
+gradually.
+
+![dynamic-capacity](docs/images/rate-limiter/dynamic-capacity.png)
+
+See [`charts/`](charts/README.md#rate-limiter) for how these charts are generated and for more scenarios.
+
 ## Adaptive-Rate-Limiter
 The `adaptive-rate-limiter` estimates and self-tunes the estimated rate at which a downstream resource (the
 "protected sink") can be invoked. It wraps a `DynamicRateLimiter` whose refill rate is driven by an AIMD (Additive
@@ -251,11 +266,11 @@ AdmissionController[IO]().flatMap { controller =>
 ```
 
 ### Behavior
-These charts drive the controller through a simulated backend (see [`charts`](charts)). Under overload it sheds the
-excess so the client allowed rate holds near `k * capacity` and the backend actual rate (goodput) stays near capacity,
-and on recovery the rejection probability returns to zero. On the right axis the dotted **failure ratio** keeps rising
-with throttling while the **rejection probability** stays at zero inside the dead zone — the gap between them is the
-dead zone.
+These charts drive the controller through a simulated backend (see [`charts`](charts/README.md#admission-controller)).
+Under overload it sheds the excess so the client allowed rate holds near `k * capacity` and the backend actual rate
+(goodput) stays near capacity, and on recovery the rejection probability returns to zero. On the right axis the dotted
+**failure ratio** keeps rising with throttling while the **rejection probability** stays at zero inside the dead zone —
+the gap between them is the dead zone.
 
 ### Tuning
 Each request is rejected with probability `max(0, (requests - k * accepts) / (requests + 1))` over the window. The `k`
@@ -353,6 +368,20 @@ delay that keeps increasing until the configurable maximum of 1 minute.
 
 It's important that the task passed to the `protect` and `protectIf` methods timeout, and specifically timeout
 before the `resetTimeout`.
+
+### Behavior
+Driven against a simulated backend through a full outage, the breaker trips once the windowed failure rate reaches
+the threshold and then fails fast. Each failed half-open probe doubles the open time, up to `maxResetTimeout`, so the
+recovered backend is only noticed at the next probe.
+
+![outage-and-recovery](docs/images/circuit-breaker/outage-and-recovery.png)
+
+The sliding window decides what counts as an outage: a short window trips on brief error spikes, while a longer one
+rides them out.
+
+![transient-spikes-short-window](docs/images/circuit-breaker/transient-spikes-short-window.png)
+
+See [`charts/`](charts/README.md#circuit-breaker) for how these charts are generated and for more scenarios.
 
 ## Credits
 Inspired by Christopher Davenport's [circuit library](https://github.com/ChristopherDavenport/circuit) and

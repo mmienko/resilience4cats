@@ -22,3 +22,4 @@ dumps/
 
 ### Python (charts renderer) ###
 .venv/
+__pycache__/
