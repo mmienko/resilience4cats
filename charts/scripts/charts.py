@@ -212,7 +212,8 @@ def promote(components):
         if missing:
             raise SystemExit(f"{component}: no staged image for {', '.join(missing)} (run `charts.py render`)")
         oldest_image = min((staged_images / f"{name}.png").stat().st_mtime for name in scenarios)
-        if manifest_path(STAGING_DIR, component).stat().st_mtime > oldest_image:
+        newest_data = max(path.stat().st_mtime for path in data_dir(STAGING_DIR, component).glob("*.csv"))
+        if newest_data > oldest_image:
             raise SystemExit(f"{component}: staged data is newer than its images (run `charts.py render`)")
 
     for component in components:
